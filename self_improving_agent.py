@@ -265,7 +265,7 @@ class MockBackend:
 
     RESPONSES = [
         """Here you go:
-```python
+````````python
 def int_to_roman(num):
     vals = [(1000,'M'),(500,'D'),(100,'C'),(50,'L'),(10,'X'),(5,'V'),(1,'I')]
     out = ''
@@ -274,9 +274,9 @@ def int_to_roman(num):
             out += s
             num -= v
     return out
-```""",
+```````""",
         """Fixed:
-```python
+``````python
 def int_to_roman(num):
     vals = [(1000,'M'),(900,'CM'),(500,'D'),(100,'C'),(90,'XC'),
             (50,'L'),(10,'X'),(9,'IX'),(5,'V'),(4,'IV'),(1,'I')]
@@ -286,7 +286,7 @@ def int_to_roman(num):
             out += s
             num -= v
     return out
-```""",
+`````""",
         """```python
 def int_to_roman(num):
     vals = [(1000,'M'),(900,'CM'),(500,'D'),(400,'CD'),(100,'C'),(90,'XC'),
@@ -297,7 +297,7 @@ def int_to_roman(num):
             out += s
             num -= v
     return out
-```""",
+````""",
     ]
 
     model = "mock"
@@ -581,52 +581,71 @@ SYSTEM = (
     "no print statements. Only the function definition."
 )
 
-# Sent when the score has not improved for `stall_limit` attempts. Deliberately
-# generic: it names strategies, never the answer. Otherwise the run stops being
-# a measurement of the model and becomes a measurement of my hint.
-STRATEGY_NUDGE = (
-    "Stop. Your last {stall} attempts all scored exactly {passed}/{total} and "
-    "failed the same cases. Small edits to your current approach are not "
-    "working, which means the structure of your solution is probably the "
-    "problem, not a detail.\n\n"
-    "Throw the previous approach away and solve it a different way. Consider: "
-    "iterating with an explicit index instead of a for-each loop so you can "
-    "inspect neighbouring elements; an explicit state machine; or building the "
-    "result with a different data structure. Do not submit a variation of what "
-    "you already tried."
+# The ratchet: every retry is anchored on the BEST attempt so far, never on a
+# regression. A model that just made things worse is shown its own best version
+# and asked to fix only what still fails -- so it cannot wander off from a worse
+# starting point, and it cannot lose ground it already earned.
+RETRY = (
+    "That version passes {passed} of {total} tests. It still fails these:\n\n"
+    "{error}\n\n"
+    "Keep everything that already works. Change only what is needed to fix the "
+    "failing cases above. Reply with only the complete function in one code "
+    "block."
 )
 
-RESTART_NOTE = (
-    "\n\nA previous programmer attempted this and got stuck at "
-    "{passed}/{total}, failing these cases:\n\n{error}\n\n"
-    "Their approach was:\n\n```python\n{code}\n```\n\n"
-    "Do not repeat their approach. Write a different implementation."
+# On a plateau we reseed from a clean context -- same anchor (the best code so
+# far), but freshly stated, because repeating an identical prompt reproduces an
+# identical answer. Crucially we do NOT tell the model to abandon the approach:
+# an earlier version did, threw away a nearly-correct solution, and the score
+# collapsed from 12/15 to 2/15. Keep the good work; fix only the gaps.
+RESEED = (
+    "{spec}\n\n"
+    "A near-complete solution already exists. It passes {passed} of {total} "
+    "tests and fails only these:\n\n{error}\n\n"
+    "Here it is:\n\n```python\n{code}\n```\n\n"
+    "Study the failing cases and fix them, keeping everything that already "
+    "works. Reply with only the complete function in one code block."
 )
 
 
 def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
-              backend_name="?", stall_limit=3, escalate=True):
+              backend_name="?", stall_limit=3, escalate=True, temp_step=0.0):
     """Yields dicts: start, attempt, escalate, done, error, stopped.
 
-    When the score plateaus for `stall_limit` attempts, escalate: raise
-    temperature, tell the model its approach is the problem, and at level 2+
-    restart from a clean context so it cannot re-derive the same fixed point.
+    Ratchet: the best-scoring attempt is always kept, saved to disk, and used as
+    the seed for the next prompt -- so a regression can never cost ground. On a
+    plateau (no improvement for `stall_limit` attempts) the loop reseeds from a
+    clean context still anchored on that best attempt.
+
+    temp_step: temperature added per escalation level. Default 0.0 leaves
+    temperature fixed, so the effect of reseeding can be measured without also
+    changing sampling. (An earlier version changed both at once and could not
+    tell which mattered; on a 7B the temperature rise made things worse.)
     """
     runner = runner or run_tests_subprocess
     run_id = uuid.uuid4().hex[:8]
     model_name = getattr(backend, "model", backend_name)
     total = len(task["cases"])
+    base_temp = 0.2
 
     yield {"type": "start", "run_id": run_id, "backend": backend_name,
            "model": model_name, "task": task["name"],
            "func_name": task["func_name"], "total": total,
-           "max_attempts": attempts, "stall_limit": stall_limit if escalate else 0}
+           "max_attempts": attempts,
+           "stall_limit": stall_limit if escalate else 0}
 
     messages = [{"role": "user", "content": task["spec"]}]
-    best = 0
+    best_passed, best_code, best_error, best_attempt = -1, None, "", 0
     stall = 0
     level = 0
-    temperature = 0.2
+    temperature = base_temp
+
+    def save_best():
+        if best_code is None:
+            return None
+        p = HERE / f"best_{task['name']}_{run_id}.py"
+        p.write_text(best_code + "\n", encoding="utf-8")
+        return p.name
 
     for attempt in range(1, attempts + 1):
         if should_stop and should_stop():
@@ -649,8 +668,13 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
             yield {"type": "error", "run_id": run_id,
                    "message": f"test runner failed: {type(e).__name__}: {e}"}
             return
-        if passed > best:
-            best, stall = passed, 0
+
+        improved = passed > best_passed
+        if improved:
+            best_passed, best_code, best_error, best_attempt = \
+                passed, code, error, attempt
+            stall = 0
+            save_best()
         else:
             stall += 1
 
@@ -662,6 +686,7 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
             "passed": passed, "total": total, "success": passed == total,
             "seconds": round(elapsed, 2), "error": error, "code": code,
             "temperature": round(temperature, 2), "level": level,
+            "best": best_passed, "improved": improved,
         }
         log_attempt(record)
         yield {"type": "attempt", **record}
@@ -674,39 +699,36 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
                    "code": code}
             return
 
+        # Plateau -> reseed from a clean context, still anchored on the best.
         if escalate and stall >= stall_limit:
             level += 1
-            temperature = round(min(0.2 + 0.35 * level, 1.0), 2)
             stall = 0
+            if temp_step:
+                temperature = round(min(base_temp + temp_step * level, 1.0), 2)
             yield {"type": "escalate", "run_id": run_id, "attempt": attempt,
                    "level": level, "temperature": round(temperature, 2),
                    "reason": f"no improvement for {stall_limit} attempts",
-                   "fresh_context": level >= 2}
-
-            if level >= 2:
-                # Same context reproduces the same fixed point. Start over,
-                # carrying only what failed and what not to do again.
-                messages = [{"role": "user", "content": task["spec"] +
-                             RESTART_NOTE.format(passed=passed, total=total,
-                                                 error=error, code=code)}]
-            else:
-                messages.append({"role": "assistant",
-                                 "content": f"```python\n{code}\n```"})
-                messages.append({"role": "user", "content": (
-                    STRATEGY_NUDGE.format(stall=stall_limit, passed=passed,
-                                          total=total)
-                    + f"\n\nStill failing:\n\n{error}")})
+                   "fresh_context": True, "anchor_passed": best_passed}
+            messages = [{"role": "user", "content": RESEED.format(
+                spec=task["spec"], passed=best_passed, total=total,
+                error=best_error, code=best_code)}]
             continue
 
-        # Feed the failure back verbatim. This is the entire mechanism.
-        messages.append({"role": "assistant", "content": f"```python\n{code}\n```"})
-        messages.append({"role": "user", "content": (
-            f"That failed {total - passed} of {total} tests:\n\n{error}\n\n"
-            "Rewrite the complete function so every case passes. "
-            "Reply with only the code block.")})
+        # Ordinary retry -- ALWAYS anchored on the best attempt, not the latest.
+        # This is the ratchet: a worse attempt is discarded, the best is what
+        # the model sees and refines.
+        messages = [
+            {"role": "user", "content": task["spec"]},
+            {"role": "assistant", "content": f"```python\n{best_code}\n```"},
+            {"role": "user", "content": RETRY.format(
+                passed=best_passed, total=total, error=best_error)},
+        ]
 
+    # Gave up -- but never lose the best. It is already saved; report where.
     yield {"type": "done", "run_id": run_id, "success": False,
-           "attempts_used": attempts, "best": best, "total": total}
+           "attempts_used": attempts, "best": best_passed, "total": total,
+           "best_attempt": best_attempt,
+           "best_solution": f"best_{task['name']}_{run_id}.py"}
 
 
 def run_loop_cli(backend, task, args, runner):
@@ -714,7 +736,8 @@ def run_loop_cli(backend, task, args, runner):
     for ev in iter_loop(backend, task, args.attempts, runner,
                         backend_name=args.backend,
                         stall_limit=args.stall_limit,
-                        escalate=not args.no_escalate):
+                        escalate=not args.no_escalate,
+                        temp_step=args.temp_step):
         if ev["type"] == "start":
             print(f"task     : {ev['task']}  ({ev['func_name']})")
             print(f"backend  : {ev['backend']}  model: {ev['model']}")
@@ -728,9 +751,9 @@ def run_loop_cli(backend, task, args, runner):
             if ev["error"] and ev["passed"] != ev["total"]:
                 print(f"           {ev['error'].splitlines()[0][:100]}")
         elif ev["type"] == "escalate":
-            print(f"           -- stuck: {ev['reason']}. escalating to level "
-                  f"{ev['level']}, temperature {ev['temperature']}"
-                  + (", fresh context" if ev["fresh_context"] else ""))
+            print(f"           -- stuck: {ev['reason']}. reseeding from best "
+                  f"({ev['anchor_passed']}/{ev.get('total', '?')}) at level "
+                  f"{ev['level']}, temperature {ev['temperature']}")
         elif ev["type"] == "done":
             if ev["success"]:
                 ok = True
@@ -739,7 +762,9 @@ def run_loop_cli(backend, task, args, runner):
                 print(f"\nsaved -> {ev['solution']}")
             else:
                 print(f"\ngave up after {ev['attempts_used']} attempts "
-                      f"(best: {ev['best']}/{ev['total']})")
+                      f"(best: {ev['best']}/{ev['total']} on attempt "
+                      f"{ev['best_attempt']})")
+                print(f"best kept -> {ev['best_solution']}")
         elif ev["type"] == "error":
             print(f"\nerror: {ev['message']}")
     return ok
@@ -803,9 +828,11 @@ def main():
     p.add_argument("--backend", default="mock",
                    choices=["anthropic", "ollama", "groq", "mock", "mock-stuck"])
     p.add_argument("--stall-limit", type=int, default=3,
-                   help="attempts without improvement before escalating")
+                   help="attempts without improvement before reseeding")
     p.add_argument("--no-escalate", action="store_true",
-                   help="disable escalation (the old behaviour, for A/B runs)")
+                   help="disable reseeding on plateau (for A/B runs)")
+    p.add_argument("--temp-step", type=float, default=0.0,
+                   help="temperature added per reseed level (default 0: fixed)")
     p.add_argument("--model", default=None, help="override the default model")
     p.add_argument("--runner", default="subprocess",
                    choices=["subprocess", "docker"])
@@ -832,3 +859,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+That's the whole file. After you commit it (on GitHub, then `git pull` locally — or straight into your editor and save):
+
+```powershell
+cd C:\Users\danie\projects\self-improving-agent
+py self_edit.py --verify-only
+```
+
+Four PASS lines means the ratchet version is in place and working. If you edited on GitHub, `git pull` first so local matches.
+
+The one behaviour change to expect: a run that gives up now prints `best kept -> best_<task>_<runid>.py` and leaves that file on disk — the best version is never lost again. And reseeding no longer touches temperature unless you pass `--temp-step`.
