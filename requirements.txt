@@ -1,0 +1,7 @@
+# Optional. The loop, UI, and self-edit use only the standard library.
+openai
+anthropic
+matplotlib
+
+# Tests (not needed to run the loop or UI)
+pytest

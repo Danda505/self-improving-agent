@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 self_improving_agent.py -- a feedback loop with a scoreboard.
 
@@ -9,8 +9,10 @@ whole trick. The test suite is what makes "improvement" mean anything.
 Backends:
     anthropic   paid API, claude-sonnet-5
     ollama      free, local, OpenAI-compatible endpoint on localhost:11434
+    lmstudio    local, OpenAI-compatible endpoint on localhost:1234
     groq        free tier, hosted, OpenAI-compatible
     mock        no LLM at all -- canned buggy-then-correct answers, for testing
+    mock-stuck  always the same partial answer, to exercise plateau reseeding
 
 Runners (where candidate code executes):
     subprocess  default. Isolation with a timeout, NOT a sandbox.
@@ -344,6 +346,13 @@ def build_backend(backend, model=None):
             model=model or "qwen2.5-coder:7b",
             base_url=os.environ.get("OLLAMA_HOST_URL", "http://localhost:11434/v1"),
             api_key="ollama",  # required by the client, ignored by the server
+        )
+    if backend == "lmstudio":
+        return OpenAICompatBackend(
+            model=model or "local-model",
+            base_url=os.environ.get("LMSTUDIO_HOST_URL",
+                                    "http://localhost:1234/v1"),
+            api_key="lmstudio",  # ignored by LM Studio's local server
         )
     if backend == "groq":
         key = os.environ.get("GROQ_API_KEY")
@@ -826,7 +835,8 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--backend", default="mock",
-                   choices=["anthropic", "ollama", "groq", "mock", "mock-stuck"])
+                   choices=["anthropic", "ollama", "lmstudio", "groq",
+                            "mock", "mock-stuck"])
     p.add_argument("--stall-limit", type=int, default=3,
                    help="attempts without improvement before reseeding")
     p.add_argument("--no-escalate", action="store_true",

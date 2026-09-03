@@ -9,6 +9,8 @@ solution_*.py
 best_*.py
 backups/
 __pycache__/
+.pytest_cache/
+pytest-cache-files-*/
 *.py[cod]
 .venv/
 venv/
@@ -16,3 +18,5 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+*.swp
+*~

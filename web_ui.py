@@ -239,6 +239,7 @@ class Handler(BaseHTTPRequestHandler):
         attempts = int(one("attempts", "10"))
         escalate = one("escalate", "1") == "1"
         stall_limit = int(one("stall_limit", "3"))
+        temp_step = float(one("temp_step", "0") or "0")
         task_name = one("task", "roman")
         task_json = one("task_json")
 
@@ -280,7 +281,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for ev in agent.iter_loop(backend, task, attempts, runner,
                                       should_stop, backend_name,
-                                      stall_limit, escalate):
+                                      stall_limit, escalate, temp_step):
                 if ev["type"] == "start":
                     state["run_id"] = ev["run_id"]
                 ev["runner"] = runner_name
@@ -416,11 +417,17 @@ PAGE = r"""<!doctype html>
   <label>Max attempts <span id="attlbl" class="muted">10</span></label>
   <input type="range" id="attempts" min="1" max="25" value="10">
 
-  <label>If it gets stuck</label>
+  <label>If it plateaus</label>
   <select id="escalate">
-    <option value="1">escalate — nudge, heat up, restart</option>
+    <option value="1">reseed from best — keep the high-water mark</option>
     <option value="0">nothing — keep feeding the same error</option>
   </select>
+
+  <label>Stall limit <span id="stalllbl" class="muted">3</span></label>
+  <input type="range" id="stall_limit" min="1" max="10" value="3">
+
+  <label>Temp step <span class="muted">0 = no heat-up</span></label>
+  <input id="temp_step" type="number" min="0" max="1" step="0.05" value="0">
 
   <button id="run">Run</button>
   <button id="stop" class="hide">Stop</button>
@@ -492,9 +499,10 @@ let es = null, runId = null, env = null;
 const BACKENDS = [
   ["mock",       "mock — no model, canned answers"],
   ["ollama",     "ollama — local, free"],
+  ["lmstudio",   "lmstudio — local OpenAI-compatible"],
   ["anthropic",  "anthropic — paid API"],
   ["groq",       "groq — free tier, hosted"],
-  ["mock-stuck", "mock-stuck — always 12/15, to test escalation"],
+  ["mock-stuck", "mock-stuck — always 12/15, to test plateau reseeding"],
 ];
 
 function tickClock() {
@@ -555,7 +563,8 @@ function syncBackend() {
   $("model").placeholder =
     b === "anthropic" ? "claude-sonnet-5"
     : b === "groq" ? "llama-3.3-70b-versatile"
-    : b === "ollama" ? "qwen2.5-coder:7b" : "n/a";
+    : b === "ollama" ? "qwen2.5-coder:7b"
+    : b === "lmstudio" ? "local-model" : "n/a";
 }
 
 function currentModel() {
@@ -566,6 +575,7 @@ function currentModel() {
 
 $("backend").onchange = syncBackend;
 $("attempts").oninput = e => $("attlbl").textContent = e.target.value;
+$("stall_limit").oninput = e => $("stalllbl").textContent = e.target.value;
 $("task").onchange = e => {
   const custom = e.target.value === "__custom";
   $("customwrap").classList.toggle("hide", !custom);
@@ -618,6 +628,8 @@ $("run").onclick = () => {
     attempts: $("attempts").value,
     task: $("task").value,
     escalate: $("escalate").value,
+    stall_limit: $("stall_limit").value,
+    temp_step: $("temp_step").value,
   });
   if ($("task").value === "__custom") p.set("task_json", $("taskjson").value);
 
@@ -675,12 +687,12 @@ function handle(ev) {
     d.style.borderColor = "#4a3c1c";
     d.style.background = "#1c1810";
     d.innerHTML =
-      `<h3 style="color:var(--warn)">Stuck — escalating to level ${ev.level}
-         <span class="muted">temperature ${ev.temperature}</span></h3>
-       <div class="muted">${esc(ev.reason)}. ` +
-      (ev.fresh_context
-        ? "Discarding the conversation and restarting from a clean context."
-        : "Telling it the approach itself is the problem.") + `</div>`;
+      `<h3 style="color:var(--warn)">Stuck — reseeding from best
+         <span class="muted">level ${ev.level} · temperature ${ev.temperature}</span></h3>
+       <div class="muted">${esc(ev.reason)}. Restarting from a clean context,
+         still using the best code so far` +
+      (ev.anchor_passed != null ? ` (${ev.anchor_passed} passed)` : "") +
+      `.</div>`;
     out.appendChild(d);
     d.scrollIntoView({ behavior: "smooth", block: "end" });
   }
