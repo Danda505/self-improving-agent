@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 self_improving_agent.py -- a feedback loop with a scoreboard.
 
@@ -859,15 +859,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-That's the whole file. After you commit it (on GitHub, then `git pull` locally — or straight into your editor and save):
-
-```powershell
-cd C:\Users\danie\projects\self-improving-agent
-py self_edit.py --verify-only
-```
-
-Four PASS lines means the ratchet version is in place and working. If you edited on GitHub, `git pull` first so local matches.
-
-The one behaviour change to expect: a run that gives up now prints `best kept -> best_<task>_<runid>.py` and leaves that file on disk — the best version is never lost again. And reseeding no longer touches temperature unless you pass `--temp-step`.
