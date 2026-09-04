@@ -1,0 +1,14 @@
+{
+  "name": "self-improving-agent",
+  "install": "bash .cursor/install.sh",
+  "ports": [
+    { "name": "web-ui", "port": 8000 }
+  ],
+  "terminals": [
+    {
+      "name": "web-ui",
+      "command": "SIA_NO_BROWSER=1 .venv/bin/python web_ui.py",
+      "description": "Self-improving-agent browser UI on http://127.0.0.1:8000 (mock backend needs no model)."
+    }
+  ]
+}
