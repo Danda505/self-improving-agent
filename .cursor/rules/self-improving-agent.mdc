@@ -1,0 +1,33 @@
+---
+description: Working agreements for the self-improving-agent repo
+alwaysApply: true
+---
+
+# Self-improving agent
+
+A test-suite-as-scoreboard loop. The model writes a function, the suite scores it, failures go back verbatim, the model rewrites. The suite is what makes "improvement" mean anything.
+
+## Layout
+
+- `self_improving_agent.py` — tasks, backends, sandbox runners, `iter_loop`
+- `web_ui.py` — stdlib-only HTTP UI; CLI and UI share `iter_loop`
+- `self_edit.py` — propose → human approve → verify-or-revert. This file is not editable by the agent.
+- `tests/test_agent.py` — stdlib/pytest, no paid APIs
+
+## Do
+
+- Keep the UI bound to `127.0.0.1`. Port via `SIA_PORT`.
+- Self-edit stays propose → approve → verify-or-revert. Do not weaken the gate.
+- Prefer extending the existing mock / tests over adding installable dependencies.
+- When `best_passed == 0`, use FRESH / FRESH_RESEED (zero-escape). Do not re-anchor on broken code. Escalate events expose `has_anchor`.
+- LM Studio is a first-class backend: OpenAI-compat on `:1234`, `LMSTUDIO_HOST_URL`, UI probe + model list.
+
+## Do not
+
+- Do not add pip/installable dependencies unless the user explicitly asked for one.
+- Do not restyle the UI unless the user asks. Design work is frozen. It is a working console, not a marketing site.
+- Do not put API keys, tokens, wallet addresses, or trading-strategy specifics in this repo, rules, README, or PR bodies.
+
+## Chart
+
+History chart: `shortModel` labels, colour-by-model, dash-by-task, legend.
