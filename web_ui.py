@@ -705,13 +705,16 @@ function handle(ev) {
     d.className = "card";
     d.style.borderColor = "#4a3c1c";
     d.style.background = "#1c1810";
-    d.innerHTML =
-      `<h3 style="color:var(--warn)">Stuck — reseeding from best
+    d.innerHTML = ev.has_anchor
+      ? `<h3 style="color:var(--warn)">Stuck — reseeding from best
          <span class="muted">level ${ev.level} · temperature ${ev.temperature}</span></h3>
        <div class="muted">${esc(ev.reason)}. Restarting from a clean context,
          still using the best code so far` +
       (ev.anchor_passed != null ? ` (${ev.anchor_passed} passed)` : "") +
-      `.</div>`;
+      `.</div>`
+      : `<h3 style="color:var(--warn)">Stuck at 0 — discarding the broken code and starting fresh.
+         <span class="muted">level ${ev.level} · temperature ${ev.temperature}</span></h3>
+       <div class="muted">${esc(ev.reason)}.</div>`;
     out.appendChild(d);
     d.scrollIntoView({ behavior: "smooth", block: "end" });
   }

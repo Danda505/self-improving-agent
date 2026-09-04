@@ -616,6 +616,23 @@ RESEED = (
     "works. Reply with only the complete function in one code block."
 )
 
+# Zero-escape: when NOTHING has ever worked (best score is 0), there is nothing
+# worth keeping. Anchoring on broken code just makes the model regenerate the
+# same broken code -- so instead we start fresh, telling it only what went wrong.
+FRESH = (
+    "{spec}\n\n"
+    "A previous attempt failed with this error:\n\n{error}\n\n"
+    "Write a fresh implementation. Reply with only the complete function in one "
+    "code block."
+)
+
+FRESH_RESEED = (
+    "{spec}\n\n"
+    "Several attempts have all failed the same way:\n\n{error}\n\n"
+    "The overall structure is the problem, not a detail. Use a completely "
+    "different approach. Reply with only the complete function in one code block."
+)
+
 
 def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
               backend_name="?", stall_limit=3, escalate=True, temp_step=0.0):
@@ -714,24 +731,34 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
             stall = 0
             if temp_step:
                 temperature = round(min(base_temp + temp_step * level, 1.0), 2)
+            has_anchor = best_passed > 0
             yield {"type": "escalate", "run_id": run_id, "attempt": attempt,
                    "level": level, "temperature": round(temperature, 2),
                    "reason": f"no improvement for {stall_limit} attempts",
-                   "fresh_context": True, "anchor_passed": best_passed}
-            messages = [{"role": "user", "content": RESEED.format(
-                spec=task["spec"], passed=best_passed, total=total,
-                error=best_error, code=best_code)}]
+                   "fresh_context": True, "anchor_passed": best_passed,
+                   "has_anchor": has_anchor}
+            if has_anchor:
+                messages = [{"role": "user", "content": RESEED.format(
+                    spec=task["spec"], passed=best_passed, total=total,
+                    error=best_error, code=best_code)}]
+            else:
+                messages = [{"role": "user", "content": FRESH_RESEED.format(
+                    spec=task["spec"], error=error)}]
             continue
 
-        # Ordinary retry -- ALWAYS anchored on the best attempt, not the latest.
-        # This is the ratchet: a worse attempt is discarded, the best is what
-        # the model sees and refines.
-        messages = [
-            {"role": "user", "content": task["spec"]},
-            {"role": "assistant", "content": f"```python\n{best_code}\n```"},
-            {"role": "user", "content": RETRY.format(
-                passed=best_passed, total=total, error=best_error)},
-        ]
+        # Ordinary retry. With a non-zero best, anchor on it and refine -- the
+        # ratchet. With nothing working yet, do NOT refine broken code: start
+        # fresh so the model can try a different structure.
+        if best_passed > 0:
+            messages = [
+                {"role": "user", "content": task["spec"]},
+                {"role": "assistant", "content": f"```python\n{best_code}\n```"},
+                {"role": "user", "content": RETRY.format(
+                    passed=best_passed, total=total, error=best_error)},
+            ]
+        else:
+            messages = [{"role": "user", "content": FRESH.format(
+                spec=task["spec"], error=error)}]
 
     # Gave up -- but never lose the best. It is already saved; report where.
     yield {"type": "done", "run_id": run_id, "success": False,
