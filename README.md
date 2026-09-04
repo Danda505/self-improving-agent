@@ -6,6 +6,8 @@ suite is the whole reason "improvement" means anything here.
 
 Two ways in: a browser UI, or the command line. Same loop underneath.
 
+![Idle Night desk console](docs/screenshot.png)
+
 ## Start here
 
 From the project folder:
