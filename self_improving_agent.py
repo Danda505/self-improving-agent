@@ -11,7 +11,7 @@ Backends:
     ollama      free, local, OpenAI-compatible endpoint on localhost:11434
     lmstudio    local, OpenAI-compatible endpoint on localhost:1234
     groq        free tier, hosted, OpenAI-compatible
-    mock        no LLM at all -- canned buggy-then-correct answers, for testing
+    mock        no LLM at all -- canned buggy-then-correct answers per built-in task
     mock-stuck  always the same partial answer, to exercise plateau reseeding
 
 Runners (where candidate code executes):
@@ -262,11 +262,13 @@ class OpenAICompatBackend:
 
 
 class MockBackend:
-    """No LLM. A fixed buggy-then-correct sequence so you can exercise the loop,
-    the logging and the chart without an API key or a GPU."""
+    """No LLM. A canned buggy-then-correct sequence per built-in task, keyed
+    off the spec in `messages` (that is how the loop passes the task). Custom
+    JSON gets a dummy stub, not a pretended solution."""
 
-    RESPONSES = [
-        """Here you go:
+    RESPONSES_FOR = {
+        "roman": [
+            """Here you go:
 ````````python
 def int_to_roman(num):
     vals = [(1000,'M'),(500,'D'),(100,'C'),(50,'L'),(10,'X'),(5,'V'),(1,'I')]
@@ -277,7 +279,7 @@ def int_to_roman(num):
             num -= v
     return out
 ```````""",
-        """Fixed:
+            """Fixed:
 ``````python
 def int_to_roman(num):
     vals = [(1000,'M'),(900,'CM'),(500,'D'),(100,'C'),(90,'XC'),
@@ -289,7 +291,7 @@ def int_to_roman(num):
             num -= v
     return out
 `````""",
-        """```python
+            """```python
 def int_to_roman(num):
     vals = [(1000,'M'),(900,'CM'),(500,'D'),(400,'CD'),(100,'C'),(90,'XC'),
             (50,'L'),(40,'XL'),(10,'X'),(9,'IX'),(5,'V'),(4,'IV'),(1,'I')]
@@ -300,16 +302,257 @@ def int_to_roman(num):
             num -= v
     return out
 ````""",
-    ]
+        ],
+        "parens": [
+            """```python
+def is_balanced(s):
+    depth = 0
+    for c in s:
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            if depth == 0:
+                return False
+            depth -= 1
+    return depth == 0
+```""",
+            """```python
+def is_balanced(s):
+    pairs = {')': '(', ']': '['}
+    stack = []
+    for c in s:
+        if c in '([':
+            stack.append(c)
+        elif c in pairs:
+            if not stack or stack[-1] != pairs[c]:
+                return False
+            stack.pop()
+    return not stack
+```""",
+            """```python
+def is_balanced(s):
+    pairs = {')': '(', ']': '[', '}': '{'}
+    stack = []
+    for c in s:
+        if c in '([{':
+            stack.append(c)
+        elif c in pairs:
+            if not stack or stack[-1] != pairs[c]:
+                return False
+            stack.pop()
+    return not stack
+```""",
+        ],
+        "csv": [
+            """```python
+def parse_csv_line(line):
+    return line.split(',')
+```""",
+            """```python
+def parse_csv_line(line):
+    result, field, in_quotes = [], "", False
+    for char in line:
+        if char == '"':
+            in_quotes = not in_quotes
+        elif char == ',' and not in_quotes:
+            result.append(field)
+            field = ""
+        else:
+            field += char
+    result.append(field)
+    return result
+```""",
+            """```python
+def parse_csv_line(line):
+    result, field, in_quotes = [], "", False
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if in_quotes:
+            if char == '"':
+                if i + 1 < len(line) and line[i + 1] == '"':
+                    field += '"'
+                    i += 1
+                else:
+                    in_quotes = False
+            else:
+                field += char
+        else:
+            if char == '"':
+                in_quotes = True
+            elif char == ',':
+                result.append(field)
+                field = ""
+            else:
+                field += char
+        i += 1
+    result.append(field)
+    return result
+```""",
+        ],
+        "expr": [
+            """```python
+def evaluate(expr):
+    expr = expr.replace(' ', '')
+    total = 0
+    for part in expr.split('+'):
+        total += int(part)
+    return total
+```""",
+            """```python
+def evaluate(expr):
+    s = expr.replace(' ', '')
+    i = 0
+    def peek():
+        return s[i] if i < len(s) else ''
+    def num():
+        nonlocal i
+        n = 0
+        while peek().isdigit():
+            n = n * 10 + int(s[i])
+            i += 1
+        return n
+    def factor():
+        nonlocal i
+        if peek() == '(':
+            i += 1
+            v = expr_ltr()
+            i += 1
+            return v
+        return num()
+    def expr_ltr():
+        nonlocal i
+        v = factor()
+        while peek() in ('+', '-', '*'):
+            op = peek()
+            i += 1
+            r = factor()
+            if op == '+':
+                v += r
+            elif op == '-':
+                v -= r
+            else:
+                v *= r
+        return v
+    return expr_ltr()
+```""",
+            """```python
+def evaluate(expr):
+    s = expr.replace(' ', '')
+    i = 0
+    def peek():
+        return s[i] if i < len(s) else ''
+    def num():
+        nonlocal i
+        n = 0
+        while peek().isdigit():
+            n = n * 10 + int(s[i])
+            i += 1
+        return n
+    def factor():
+        nonlocal i
+        if peek() == '(':
+            i += 1
+            v = parse_expr()
+            i += 1
+            return v
+        return num()
+    def term():
+        nonlocal i
+        v = factor()
+        while peek() == '*':
+            i += 1
+            v *= factor()
+        return v
+    def parse_expr():
+        nonlocal i
+        v = term()
+        while peek() in ('+', '-'):
+            op = peek()
+            i += 1
+            r = term()
+            v = v + r if op == '+' else v - r
+        return v
+    return parse_expr()
+```""",
+        ],
+        "roman_parse": [
+            """```python
+def roman_to_int(s):
+    vals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    return sum(vals[c] for c in s)
+```""",
+            """```python
+def roman_to_int(s):
+    vals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    n = 0
+    for i, c in enumerate(s):
+        v = vals[c]
+        if i + 1 < len(s) and vals[s[i + 1]] > v and c == 'I':
+            n -= v
+        else:
+            n += v
+    return n
+```""",
+            """```python
+def roman_to_int(s):
+    vals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    n = 0
+    for i, c in enumerate(s):
+        v = vals[c]
+        if i + 1 < len(s) and vals[s[i + 1]] > v:
+            n -= v
+        else:
+            n += v
+    return n
+```""",
+        ],
+    }
+    RESPONSES = RESPONSES_FOR["roman"]
 
     model = "mock"
 
     def __init__(self, model=None):
         self.i = 0
 
+    def _builtin_from_messages(self, messages):
+        blob = "\n".join(
+            (m.get("content") or "") if isinstance(m, dict) else str(m)
+            for m in messages
+        )
+        for name, task in BUILTIN_TASKS.items():
+            if task["spec"] in blob:
+                return name
+        for name, task in BUILTIN_TASKS.items():
+            if f"`{task['func_name']}(" in blob:
+                return name
+        return None
+
+    def _custom_dummy(self, messages):
+        blob = "\n".join(
+            (m.get("content") or "") if isinstance(m, dict) else str(m)
+            for m in messages
+        )
+        m = re.search(r"function `(\w+)\(", blob)
+        if not m:
+            m = re.search(r"Write (?:a Python function )?`(\w+)\(", blob)
+        if not m:
+            m = re.search(r"Write (\w+)\(", blob)
+        name = m.group(1) if m else "solution"
+        return (
+            "```python\n"
+            f"def {name}(*args, **kwargs):\n"
+            "    return None  # mock does not solve custom tasks\n"
+            "```"
+        )
+
     def complete(self, system, messages, temperature=0.2, max_tokens=2000):
         time.sleep(0.4)  # so the UI stream is visible
-        r = self.RESPONSES[min(self.i, len(self.RESPONSES) - 1)]
+        key = self._builtin_from_messages(messages)
+        seq = self.RESPONSES_FOR.get(key) if key else None
+        if not seq:
+            return self._custom_dummy(messages)
+        r = seq[min(self.i, len(seq) - 1)]
         self.i += 1
         return r
 
@@ -400,9 +643,28 @@ import json, sys, traceback
 payload = json.loads(sys.stdin.read())
 code, cases, func_name = payload["code"], payload["cases"], payload["func_name"]
 
-def emit(passed, error):
+def case_input(args):
+    shown = ", ".join(repr(a) for a in args)
+    return shown if len(shown) <= 80 else shown[:77] + "..."
+
+def short_err(text, n=160):
+    line = (text or "").strip().splitlines()[-1] if text else ""
+    return line[:n]
+
+def blank_cases(error):
+    msg = short_err(error)
+    out = []
+    for i, (args, _) in enumerate(cases):
+        entry = {"id": i, "input": case_input(args), "ok": False}
+        if msg:
+            entry["error"] = msg
+        out.append(entry)
+    return out
+
+def emit(passed, error, case_results=None):
     print("===RESULT===" + json.dumps(
-        {"passed": passed, "total": len(cases), "error": error}))
+        {"passed": passed, "total": len(cases), "error": error,
+         "cases": case_results if case_results is not None else blank_cases(error)}))
     sys.exit(0)
 
 ns = {}
@@ -415,32 +677,66 @@ fn = ns.get(func_name)
 if not callable(fn):
     emit(0, "no function named %r was defined" % func_name)
 
-passed, failures = 0, []
-for args, expected in cases:
-    shown = ", ".join(repr(a) for a in args)
+passed, failures, results = 0, [], []
+for i, (args, expected) in enumerate(cases):
+    shown = case_input(args)
     try:
         got = fn(*args)
     except Exception:
-        failures.append("%s(%s) raised:\n%s"
-                        % (func_name, shown, traceback.format_exc(limit=2)))
+        msg = "%s(%s) raised:\n%s" % (
+            func_name, shown, traceback.format_exc(limit=2))
+        failures.append(msg)
+        results.append({"id": i, "input": shown, "ok": False,
+                        "error": short_err(msg)})
         continue
     if got == expected:
         passed += 1
+        results.append({"id": i, "input": shown, "ok": True})
     else:
-        failures.append("%s(%s) -> %r, expected %r"
-                        % (func_name, shown, got, expected))
+        msg = "%s(%s) -> %r, expected %r" % (func_name, shown, got, expected)
+        failures.append(msg)
+        results.append({"id": i, "input": shown, "ok": False,
+                        "error": short_err(msg)})
 
-emit(passed, "\n".join(failures[:5]) if failures else "")
+emit(passed, "\n".join(failures[:5]) if failures else "", results)
 '''
 
 
-def _parse_verdict(stdout, stderr, total):
+def _case_input(args, limit=80):
+    shown = ", ".join(repr(a) for a in args)
+    return shown if len(shown) <= limit else shown[:limit - 3] + "..."
+
+
+def _short_err(text, n=160):
+    if not text:
+        return ""
+    return text.strip().splitlines()[-1][:n]
+
+
+def _failed_cases(task, error):
+    """Scoreboard rows when the runner never got to individual cases."""
+    msg = _short_err(error)
+    out = []
+    for i, pair in enumerate(task["cases"]):
+        entry = {"id": i, "input": _case_input(pair[0]), "ok": False}
+        if msg:
+            entry["error"] = msg
+        out.append(entry)
+    return out
+
+
+def _parse_verdict(stdout, stderr, task):
+    total = len(task["cases"])
     marker = "===RESULT==="
     if marker not in stdout:
-        return 0, total, (f"test runner produced no result.\n"
-                          f"stdout: {stdout[-400:]}\nstderr: {stderr[-400:]}")
+        err = (f"test runner produced no result.\n"
+               f"stdout: {stdout[-400:]}\nstderr: {stderr[-400:]}")
+        return 0, total, err, _failed_cases(task, err)
     r = json.loads(stdout.split(marker, 1)[1].strip())
-    return r["passed"], r["total"], r["error"]
+    cases = r.get("cases")
+    if not isinstance(cases, list):
+        cases = _failed_cases(task, r.get("error") or "")
+    return r["passed"], r["total"], r["error"], cases
 
 
 def run_tests_subprocess(code, task):
@@ -455,9 +751,10 @@ def run_tests_subprocess(code, task):
             capture_output=True, text=True, timeout=TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return 0, total, (f"the code did not finish within {TIMEOUT_SECONDS}s "
-                          "-- probably an infinite loop")
-    return _parse_verdict(proc.stdout, proc.stderr, total)
+        err = (f"the code did not finish within {TIMEOUT_SECONDS}s "
+               "-- probably an infinite loop")
+        return 0, total, err, _failed_cases(task, err)
+    return _parse_verdict(proc.stdout, proc.stderr, task)
 
 
 # `docker info` hangs for a long time when Docker Desktop is not running, and
@@ -527,11 +824,13 @@ def run_tests_docker(code, task):
                               text=True, timeout=TIMEOUT_SECONDS + 15)
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", name], capture_output=True)
-        return 0, total, (f"the code did not finish within {TIMEOUT_SECONDS}s "
-                          "-- probably an infinite loop")
+        err = (f"the code did not finish within {TIMEOUT_SECONDS}s "
+               "-- probably an infinite loop")
+        return 0, total, err, _failed_cases(task, err)
     if proc.returncode == 137:
-        return 0, total, "the container was killed -- ran out of memory"
-    return _parse_verdict(proc.stdout, proc.stderr, total)
+        err = "the container was killed -- ran out of memory"
+        return 0, total, err, _failed_cases(task, err)
+    return _parse_verdict(proc.stdout, proc.stderr, task)
 
 
 def get_runner(name):
@@ -689,7 +988,7 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
 
         code = extract_code(reply)
         try:
-            passed, total, error = runner(code, task)
+            passed, total, error, cases = runner(code, task)
         except Exception as e:
             yield {"type": "error", "run_id": run_id,
                    "message": f"test runner failed: {type(e).__name__}: {e}"}
@@ -711,6 +1010,7 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
             "task": task["name"], "attempt": attempt,
             "passed": passed, "total": total, "success": passed == total,
             "seconds": round(elapsed, 2), "error": error, "code": code,
+            "cases": cases,
             "temperature": round(temperature, 2), "level": level,
             "best": best_passed, "improved": improved,
         }
