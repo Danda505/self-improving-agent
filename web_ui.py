@@ -283,6 +283,9 @@ class Handler(BaseHTTPRequestHandler):
                 "solved_at": flags.index(True) + 1 if any(flags) else None,
                 "points": [{"attempt": a["attempt"], "passed": a["passed"],
                             "total": a["total"], "seconds": a.get("seconds", 0),
+                            **({"elapsed_ms": a["elapsed_ms"]}
+                               if "elapsed_ms" in a else {}),
+                            **({"tokens": a["tokens"]} if "tokens" in a else {}),
                             **({"cases": a["cases"]} if "cases" in a else {})}
                            for a in attempts],
             })
@@ -702,6 +705,19 @@ CSS = r"""
   }
   .waiting h3 { margin:0 0 4px; font-family:var(--serif); font-size:22px; font-weight:400 }
   #chart { width:100%; height:230px }
+  #heatmap { margin-top:18px }
+  .heatmap { margin-top:12px }
+  .heatmap:first-child { margin-top:0 }
+  .heatmap-label {
+    font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--muted); font-weight:500; margin-bottom:6px;
+  }
+  .heat-row { display:flex; align-items:center; gap:8px }
+  .heat-n {
+    font-family:var(--mono); font-size:10px; color:var(--muted);
+    width:1.4em; text-align:right; flex-shrink:0; letter-spacing:.04em;
+  }
+  .heatmap .bar { flex:1; margin:2px 0 }
   .hist {
     font-size:13px; color:var(--muted); display:flex;
     justify-content:space-between; gap:16px; padding:12px 0;
@@ -902,7 +918,8 @@ HTML = r"""
 
   <div id="curve" class="hide">
     <div class="card"><svg id="chart" viewBox="0 0 800 230"
-         preserveAspectRatio="none"></svg></div>
+         preserveAspectRatio="none"></svg>
+      <div id="heatmap"></div></div>
     <div class="card">
       <div class="card-head">
         <h3>Runs</h3>
@@ -1162,6 +1179,18 @@ function esc(s) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function telemetryLine(ev) {
+  const parts = [];
+  const ms = ev.elapsed_ms;
+  if (ms != null && ms !== "") {
+    parts.push(ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms");
+  } else if (ev.seconds != null) {
+    parts.push(ev.seconds + "s");
+  }
+  if (ev.tokens != null && ev.tokens !== "") parts.push(ev.tokens + " tok");
+  return parts.join(" · ");
+}
+
 function bar(passed, total, cases) {
   let s = '<div class="bar">';
   for (let i = 0; i < total; i++) {
@@ -1297,7 +1326,7 @@ function handle(ev) {
     card.innerHTML =
       `<h3>Attempt ${ev.attempt}
          <span class="muted">${ev.passed}/${ev.total} passed ·
-         ${ev.seconds}s</span></h3>` +
+         ${telemetryLine(ev)}</span></h3>` +
       bar(ev.passed, ev.total, ev.cases) +
       (ev.error && !ok
         ? `<pre class="err">${esc(ev.error)}</pre>` + codeFold
@@ -1369,7 +1398,9 @@ async function loadHistory() {
         </div>`;
       }).join("")
     : `<div class="muted">No runs yet.</div>`;
-  drawChart(runs.slice(0, 8));
+  const slice = runs.slice(0, 8);
+  drawChart(slice);
+  drawHeatmap(slice);
 }
 
 function chartToken(name, fallback) {
@@ -1443,6 +1474,41 @@ function drawChart(runs) {
     s += `<text x="${(W - PR) / 2}" y="${H / 2}" fill="${label}" font-size="13" text-anchor="middle">No runs logged yet</text>`;
   }
   el.innerHTML = s;
+}
+
+function drawHeatmap(runs) {
+  const el = $("heatmap");
+  if (!el) return;
+  if (!runs || !runs.length) { el.innerHTML = ""; return; }
+  el.innerHTML = runs.map(r => {
+    const label = `${esc(shortModel(r.model))} · ${esc(r.task)}`;
+    const hasCases = r.points.some(p => Array.isArray(p.cases));
+    if (!hasCases) {
+      return `<div class="heatmap">
+        <div class="heatmap-label">${label}</div>
+        <div class="muted">no case log</div>
+      </div>`;
+    }
+    const rows = r.points.map(p => {
+      const cases = Array.isArray(p.cases) ? p.cases : null;
+      const cells = cases
+        ? bar(p.passed, p.total, cases)
+        : grayBar(p.total, p.attempt);
+      return `<div class="heat-row"><span class="heat-n">${p.attempt}</span>${cells}</div>`;
+    }).join("");
+    return `<div class="heatmap">
+      <div class="heatmap-label">${label}</div>
+      ${rows}
+    </div>`;
+  }).join("");
+}
+
+function grayBar(total, attempt) {
+  let s = '<div class="bar">';
+  for (let i = 0; i < total; i++) {
+    s += `<div class="seg" title="attempt ${attempt} · case ${i} · no case log"></div>`;
+  }
+  return s + "</div>";
 }
 
 $("clearhist").onclick = () => $("clearconfirm").classList.remove("hide");

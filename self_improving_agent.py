@@ -188,6 +188,51 @@ def validate_task(task):
 # Backends: every one of these is complete(system, messages) -> str
 # ----------------------------------------------------------------------------
 
+def tokens_from_usage(usage):
+    """Normalize OpenAI-compat / Anthropic usage to prompt/completion/total.
+
+    Local servers often omit usage or send zeros; return None in those cases
+    so the UI can stay quiet instead of showing '0 tok'.
+    """
+    if usage is None:
+        return None
+    if isinstance(usage, int):
+        return {"prompt": 0, "completion": 0, "total": usage} if usage else None
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens",
+                           usage.get("prompt")))
+        completion = usage.get("completion_tokens", usage.get("output_tokens",
+                                usage.get("completion")))
+        total = usage.get("total_tokens", usage.get("total"))
+    else:
+        prompt = getattr(usage, "prompt_tokens", None)
+        if prompt is None:
+            prompt = getattr(usage, "input_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+        if completion is None:
+            completion = getattr(usage, "output_tokens", None)
+        total = getattr(usage, "total_tokens", None)
+    if prompt is None and completion is None and total is None:
+        return None
+    prompt = int(prompt or 0)
+    completion = int(completion or 0)
+    total = int(total) if total is not None else prompt + completion
+    if total <= 0:
+        return None
+    return {"prompt": prompt, "completion": completion, "total": total}
+
+
+def take_last_tokens(backend):
+    """Total tokens from the last complete(), or None if nothing was reported."""
+    raw = getattr(backend, "last_usage", None)
+    if hasattr(backend, "last_usage"):
+        backend.last_usage = None
+    info = tokens_from_usage(raw)
+    if not info:
+        return None
+    return int(info["total"])
+
+
 class AnthropicBackend:
     """Anthropic takes `system` as its own parameter, not a message."""
 
@@ -213,14 +258,26 @@ class AnthropicBackend:
     # 10-minute non-streaming limit, so it insists on streaming.
     STREAM_ABOVE = 8000
 
+    def _remember_usage(self, resp):
+        try:
+            self.last_usage = tokens_from_usage(getattr(resp, "usage", None))
+        except Exception:
+            self.last_usage = None
+
     def _call(self, kwargs):
+        self.last_usage = None
         if kwargs["max_tokens"] > self.STREAM_ABOVE:
             parts = []
             with self.client.messages.stream(**kwargs) as s:
                 for chunk in s.text_stream:
                     parts.append(chunk)
+                try:
+                    self._remember_usage(s.get_final_message())
+                except Exception:
+                    pass
             return "".join(parts)
         resp = self.client.messages.create(**kwargs)
+        self._remember_usage(resp)
         return "".join(b.text for b in resp.content if b.type == "text")
 
     def complete(self, system, messages, temperature=0.2, max_tokens=2000):
@@ -253,11 +310,16 @@ class OpenAICompatBackend:
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=300.0)
 
     def complete(self, system, messages, temperature=0.2, max_tokens=2000):
+        self.last_usage = None
         full = [{"role": "system", "content": system}] + messages
         resp = self.client.chat.completions.create(
             model=self.model, messages=full, temperature=temperature,
             max_tokens=max_tokens,
         )
+        try:
+            self.last_usage = tokens_from_usage(getattr(resp, "usage", None))
+        except Exception:
+            self.last_usage = None
         return resp.choices[0].message.content or ""
 
 
@@ -985,6 +1047,8 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
                    "message": f"{type(e).__name__}: {e}"}
             return
         elapsed = time.time() - t0
+        elapsed_ms = max(0, int(round(elapsed * 1000)))
+        tokens = take_last_tokens(backend)
 
         code = extract_code(reply)
         try:
@@ -1009,11 +1073,14 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
             "backend": backend_name, "model": model_name,
             "task": task["name"], "attempt": attempt,
             "passed": passed, "total": total, "success": passed == total,
-            "seconds": round(elapsed, 2), "error": error, "code": code,
+            "seconds": round(elapsed, 2), "elapsed_ms": elapsed_ms,
+            "error": error, "code": code,
             "cases": cases,
             "temperature": round(temperature, 2), "level": level,
             "best": best_passed, "improved": improved,
         }
+        if tokens is not None:
+            record["tokens"] = tokens
         log_attempt(record)
         yield {"type": "attempt", **record}
 

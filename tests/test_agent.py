@@ -342,3 +342,63 @@ def test_build_backend_lmstudio_respects_host_url_env(monkeypatch):
     assert be.model == "my-local"
     assert captured["base_url"] == "http://example.invalid:9999/v1"
     assert captured["api_key"] == "lmstudio"
+
+
+def test_tokens_from_usage_openai_and_anthropic():
+    oa = SimpleNamespace(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+    assert agent.tokens_from_usage(oa) == {"prompt": 10, "completion": 20, "total": 30}
+    ant = SimpleNamespace(input_tokens=4, output_tokens=6)
+    assert agent.tokens_from_usage(ant)["total"] == 10
+    assert agent.tokens_from_usage(None) is None
+    assert agent.tokens_from_usage({"total_tokens": 0}) is None
+    assert agent.tokens_from_usage({"prompt": 1, "completion": 2, "total": 3})["total"] == 3
+
+
+def test_take_last_tokens_clears_and_skips_missing():
+    be = SimpleNamespace()
+    assert agent.take_last_tokens(be) is None
+    be.last_usage = {"prompt_tokens": 100, "completion_tokens": 700, "total_tokens": 800}
+    assert agent.take_last_tokens(be) == 800
+    assert be.last_usage is None
+
+
+def test_loop_records_elapsed_ms_without_tokens(tmp_path, monkeypatch):
+    _silence_loop(tmp_path, monkeypatch)
+    events = list(agent.iter_loop(
+        agent.MockBackend(), agent.BUILTIN_TASKS["roman"],
+        attempts=1, backend_name="mock",
+    ))
+    att = next(e for e in events if e["type"] == "attempt")
+    assert isinstance(att["elapsed_ms"], int)
+    assert att["elapsed_ms"] >= 0
+    assert "tokens" not in att
+    logged = json.loads((tmp_path / "attempts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert logged["elapsed_ms"] == att["elapsed_ms"]
+    assert "tokens" not in logged
+
+
+class _UsageBackend:
+    model = "usage-fake"
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.last_usage = None
+
+    def complete(self, system, messages, temperature=0.2, max_tokens=2000):
+        self.last_usage = {
+            "prompt_tokens": 100, "completion_tokens": 700, "total_tokens": 800,
+        }
+        return self.reply
+
+
+def test_loop_records_tokens_when_backend_reports(tmp_path, monkeypatch):
+    _silence_loop(tmp_path, monkeypatch)
+    events = list(agent.iter_loop(
+        _UsageBackend(ZERO_ROMAN), agent.BUILTIN_TASKS["roman"],
+        attempts=1, backend_name="usage",
+    ))
+    att = next(e for e in events if e["type"] == "attempt")
+    assert att["tokens"] == 800
+    logged = json.loads((tmp_path / "attempts.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert logged["tokens"] == 800
+    assert logged["elapsed_ms"] == att["elapsed_ms"]

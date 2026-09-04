@@ -118,3 +118,48 @@ def test_api_history_legacy_lines_and_cases(tmp_path, monkeypatch):
 def test_attempt_bar_uses_case_outcomes():
     assert "function bar(passed, total, cases)" in web_ui.JS
     assert "bar(ev.passed, ev.total, ev.cases)" in web_ui.JS
+
+
+def test_curve_heatmap_uses_cases_and_skips_legacy():
+    assert "function drawHeatmap(runs)" in web_ui.JS
+    assert 'id="heatmap"' in web_ui.HTML
+    assert "no case log" in web_ui.JS
+    assert "function grayBar(" in web_ui.JS
+    assert "drawHeatmap(slice)" in web_ui.JS
+    assert "polyline" in web_ui.JS
+
+
+def test_attempt_card_shows_telemetry():
+    assert "function telemetryLine(ev)" in web_ui.JS
+    assert "telemetryLine(ev)" in web_ui.JS
+    assert "elapsed_ms" in web_ui.JS
+    assert "tok" in web_ui.JS
+
+
+def test_api_history_forwards_telemetry_when_present(tmp_path, monkeypatch):
+    log = tmp_path / "attempts.jsonl"
+    monkeypatch.setattr(agent, "LOG_PATH", log)
+    rec = {
+        "run_id": "tel1", "ts": "2020-01-03T00:00:00+00:00",
+        "backend": "anthropic", "model": "claude", "task": "roman",
+        "attempt": 1, "passed": 3, "total": 11, "success": False,
+        "seconds": 1.2, "elapsed_ms": 1200, "tokens": 800,
+        "error": "nope", "code": "x",
+        "cases": [{"id": 0, "input": "1", "ok": True}],
+    }
+    log.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), web_ui.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/api/history"
+        with urllib.request.urlopen(url, timeout=2) as r:
+            data = json.loads(r.read())
+        pt = data[0]["points"][0]
+        assert pt["elapsed_ms"] == 1200
+        assert pt["tokens"] == 800
+        assert pt["cases"][0]["ok"] is True
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
