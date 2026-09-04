@@ -680,23 +680,52 @@ CSS = r"""
   .banner.info { background:var(--panel); color:var(--fg);
                  border:1px solid var(--hair); font-weight:400 }
   .empty {
-    text-align:left; padding:min(14vh, 120px) 8px 48px;
-    max-width:640px; margin:0;
+    text-align:left; padding:8px 8px 40px;
+    max-width:760px; margin:0;
   }
-  .empty .kicker {
+  #idle .idle-instrument { margin:0 0 28px }
+  #idle .idle-lbl {
     font-size:11px; letter-spacing:.18em; text-transform:uppercase;
-    color:var(--brass); margin-bottom:22px; font-weight:500;
+    color:var(--muted); font-weight:500; margin:0 0 6px;
   }
-  .empty h2 {
-    font-family:var(--serif); font-size:clamp(40px, 6vw, 72px); font-weight:400;
-    margin:0 0 18px; letter-spacing:-.035em; line-height:.95;
+  #idle .idle-score {
+    display:block; font-family:var(--serif); font-weight:400;
+    font-size:clamp(104px, 18vw, 176px); color:var(--brass);
+    letter-spacing:-.05em; line-height:.78;
+    font-variant-numeric:tabular-nums; margin:0 0 10px;
   }
-  .empty h2 em { font-style:italic; color:var(--brass) }
-  .empty p {
-    color:var(--muted); margin:0 0 32px; font-size:16px; line-height:1.5;
-    max-width:26em;
+  #idle .idle-denom {
+    font-size:.36em; color:var(--muted); letter-spacing:-.03em;
   }
-  #run-mock { width:auto; display:inline-block; padding:12px 22px; margin:0 }
+  #idle .idle-meta {
+    font-size:clamp(18px, 2.4vw, 26px); color:var(--fg);
+    letter-spacing:-.02em; line-height:1.25; margin:0 0 4px;
+  }
+  #idle .idle-note {
+    display:block; font-size:13px; color:var(--muted); margin:0 0 18px;
+  }
+  #idle .idle-instrument.ghost .idle-score { color:var(--muted) }
+  #idle .idle-instrument.ghost .idle-meta { color:var(--muted) }
+  #idle .idle-trace .bar { margin:0; gap:5px }
+  #idle .idle-trace .seg { height:22px; border-radius:3px }
+  #idle .idle-spark { color:var(--brass); display:block; width:100%; height:48px }
+  #idle .idle-editorial { margin:4px 0 0; max-width:36em }
+  #idle .idle-lede {
+    font-family:var(--serif); font-style:italic; font-weight:400;
+    font-size:clamp(22px, 2.6vw, 30px); letter-spacing:-.03em;
+    color:var(--fg); line-height:1.18; margin:0 0 8px;
+  }
+  #idle .idle-copy {
+    margin:0; font-size:15px; line-height:1.5; color:var(--fg);
+    max-width:34em;
+  }
+  html[data-theme="light"] #idle .idle-copy { color:#3f3c36 }
+  #idle .idle-cta {
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    margin-top:28px; padding-top:18px; border-top:1px solid var(--hair);
+  }
+  #idle .idle-hint { color:var(--muted); font-size:12px }
+  #run-mock { width:auto; display:inline-block; padding:9px 16px; margin:0; font-size:13px }
   .card.waiting { display:flex; align-items:flex-start; gap:14px; margin-bottom:14px }
   .pulse {
     width:8px; height:8px; border-radius:50%; background:var(--brass);
@@ -773,6 +802,28 @@ CSS = r"""
   ::-webkit-scrollbar { width:10px; height:10px }
   ::-webkit-scrollbar-thumb { background:var(--hair); border-radius:99px }
   ::-webkit-scrollbar-track { background:transparent }
+  #edit .gate {
+    list-style:none; display:grid; grid-template-columns:1fr 1fr 1fr;
+    gap:8px 20px; margin:0 0 8px; padding:2px 0 18px;
+    border-bottom:1px solid var(--hair);
+  }
+  #edit .gate-beat { min-width:0; margin:0; padding:0 }
+  #edit .gate-n {
+    display:block; font-family:var(--serif); font-size:28px; font-weight:400;
+    color:var(--muted); letter-spacing:-.04em; line-height:1; margin:0 0 8px;
+    font-variant-numeric:tabular-nums; transition:color .28s ease;
+  }
+  #edit .gate-lbl {
+    display:block; font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--fg); font-weight:500; margin:0 0 3px;
+  }
+  #edit .gate-hint { display:block; font-size:12px; color:var(--muted); line-height:1.4 }
+  #edit .gate-beat.live .gate-n { color:var(--brass); animation:pulse 1.2s ease-in-out infinite }
+  #edit .gate-beat.ok .gate-n { color:var(--ok) }
+  #edit .gate-beat.fail .gate-n { color:var(--bad) }
+  #edit .gate-kicker {
+    margin:0 0 18px; font-size:12px; color:var(--muted); letter-spacing:.01em;
+  }
 """
 
 HTML = r"""
@@ -919,10 +970,27 @@ HTML = r"""
       </div>
     </div>
     <div class="empty" id="idle">
-      <div class="kicker">No run yet</div>
-      <h2>Watch the loop <em>climb</em></h2>
-      <p>Write a function, run the tests, feed the error back, rewrite.</p>
-      <button type="button" id="run-mock">Run mock — no API key</button>
+      <div class="idle-instrument ghost" id="idle-peek">
+        <div class="idle-lbl">last climb</div>
+        <div class="idle-score">0<span class="idle-denom">/—</span></div>
+        <div class="idle-meta">no climbs yet</div>
+        <span class="idle-note">attempt 0 / waiting</span>
+        <div class="idle-trace">
+          <div class="bar idle-ghost-bar">
+            <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+            <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+            <div class="seg"></div><div class="seg"></div>
+          </div>
+        </div>
+      </div>
+      <div class="idle-editorial">
+        <p class="idle-lede">Write. Test. Feed the error back. Rewrite.</p>
+        <p class="idle-copy">The suite is the scoreboard. A loop that climbs until the cases go quiet.</p>
+      </div>
+      <div class="idle-cta">
+        <button type="button" id="run-mock">Run mock — no API key</button>
+        <span class="idle-hint">or pick a backend in the rail</span>
+      </div>
     </div>
     <div class="timeline" id="attempts-out"></div>
   </div>
@@ -946,12 +1014,24 @@ HTML = r"""
   </div>
 
   <div id="edit" class="hide">
-    <div class="warn-box" style="margin:0 0 14px">
-      This rewrites the app's own source on your disk. Nothing is written until
-      you approve the diff, every write is backed up first, and any edit that
-      fails the checks is reverted automatically. Use a strong model — a 7B
-      will mangle a 700-line file.
-    </div>
+    <ol class="gate" id="edit-gate" aria-label="What the gate does">
+      <li class="gate-beat" data-beat="propose">
+        <span class="gate-n">01</span>
+        <span class="gate-lbl">propose</span>
+        <span class="gate-hint">diff only — nothing written</span>
+      </li>
+      <li class="gate-beat" data-beat="backup">
+        <span class="gate-n">02</span>
+        <span class="gate-lbl">backup</span>
+        <span class="gate-hint">snapshot before the write</span>
+      </li>
+      <li class="gate-beat" data-beat="verify">
+        <span class="gate-n">03</span>
+        <span class="gate-lbl">verify or revert</span>
+        <span class="gate-hint">keep it, or undo</span>
+      </li>
+    </ol>
+    <p class="gate-kicker">This rewrites the app's own source. Use a strong model.</p>
 
     <div class="card">
       <div style="display:flex; gap:10px; align-items:flex-end">
@@ -1597,6 +1677,67 @@ function grayBar(total, attempt) {
   return s + "</div>";
 }
 
+function ghostBar(n) {
+  let s = '<div class="bar idle-ghost-bar">';
+  for (let i = 0; i < n; i++) s += '<div class="seg"></div>';
+  return s + "</div>";
+}
+
+function idleSpark(points) {
+  const w = 640, h = 48, pad = 3;
+  const n = points.length;
+  const coords = points.map((pt, i) => {
+    const x = pad + (n === 1 ? (w - 2 * pad) / 2 : i / (n - 1) * (w - 2 * pad));
+    const frac = pt.total ? pt.passed / pt.total : 0;
+    const y = h - pad - frac * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return `<svg class="idle-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${coords.join(" ")}" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></svg>`;
+}
+
+function renderIdlePeek(run) {
+  const el = $("idle-peek");
+  if (!el) return;
+  if (!run || !Array.isArray(run.points) || !run.points.length) {
+    el.className = "idle-instrument ghost";
+    el.innerHTML =
+      `<div class="idle-lbl">last climb</div>
+       <div class="idle-score">0<span class="idle-denom">/—</span></div>
+       <div class="idle-meta">no climbs yet</div>
+       <span class="idle-note">attempt 0 / waiting</span>
+       <div class="idle-trace">${ghostBar(8)}</div>`;
+    return;
+  }
+  const points = run.points;
+  const total = points[0].total || 0;
+  const best = Math.max(...points.map(p => p.passed));
+  const bestPt = points.reduce((a, p) => p.passed >= a.passed ? p : a, points[0]);
+  const cases = Array.isArray(bestPt.cases) ? bestPt.cases : null;
+  const trace = cases
+    ? bar(bestPt.passed, bestPt.total || cases.length, cases)
+    : (points.length > 1 ? idleSpark(points) : ghostBar(total || 8));
+  const note = run.solved_at
+    ? `solved · attempt ${run.solved_at}`
+    : `${points.length} ${points.length === 1 ? "try" : "tries"}`;
+  el.className = "idle-instrument";
+  el.innerHTML =
+    `<div class="idle-lbl">last climb</div>
+     <div class="idle-score">${best}<span class="idle-denom">${total ? "/" + total : ""}</span></div>
+     <div class="idle-meta">${esc(run.task)} · ${esc(shortModel(run.model || run.backend || ""))}</div>
+     <span class="idle-note">${note}</span>
+     <div class="idle-trace">${trace}</div>`;
+}
+
+async function loadIdlePeek() {
+  if (!$("idle-peek") || $("idle").classList.contains("hide")) return;
+  let run = null;
+  try {
+    const runs = await (await fetch("/api/history")).json();
+    if (Array.isArray(runs) && runs[0]) run = runs[0];
+  } catch (e) { run = null; }
+  renderIdlePeek(run);
+}
+
 $("clearhist").onclick = () => $("clearconfirm").classList.remove("hide");
 $("clearhist-no").onclick = () => $("clearconfirm").classList.add("hide");
 $("clearhist-yes").onclick = async () => {
@@ -1615,6 +1756,16 @@ $("clearhist-yes").onclick = async () => {
 // ---- self-edit ------------------------------------------------------------
 
 let proposal = null;
+
+function setGate(beat, state) {
+  const el = document.querySelector(`#edit .gate-beat[data-beat="${beat}"]`);
+  if (!el) return;
+  el.classList.remove("live", "ok", "fail");
+  if (state) el.classList.add(state);
+}
+function resetGate() {
+  ["propose", "backup", "verify"].forEach(b => setGate(b, ""));
+}
 
 function initSelfEdit() {
   const se = env.selfedit;
@@ -1641,6 +1792,8 @@ $("propose").onclick = async () => {
     return;
   }
   $("propose").disabled = true;
+  resetGate();
+  setGate("propose", "live");
   $("editout").innerHTML = `<div class="banner info">Thinking… a full file
     rewrite takes a while.</div>`;
   try {
@@ -1652,6 +1805,7 @@ $("propose").onclick = async () => {
     const d = await r.json();
     if (d.error) throw new Error(d.error);
     proposal = d;
+    setGate("propose", "ok");
     $("editout").innerHTML =
       `<div class="banner info">Proposed change to <b>${esc(d.file)}</b> —
          read it before approving.</div>
@@ -1663,8 +1817,13 @@ $("propose").onclick = async () => {
            border-color:var(--bad); color:var(--bad)">Discard</button>
        </div>`;
     $("approve").onclick = applyProposal;
-    $("reject").onclick = () => { proposal = null; $("editout").innerHTML = ""; };
+    $("reject").onclick = () => {
+      proposal = null;
+      resetGate();
+      $("editout").innerHTML = "";
+    };
   } catch (e) {
+    setGate("propose", "fail");
     $("editout").innerHTML = `<div class="banner bad">${esc(e.message)}</div>`;
   } finally {
     $("propose").disabled = false;
@@ -1690,6 +1849,7 @@ function applyProposal() {
   if (!proposal) return;
   $("approve").disabled = true;
   $("reject").disabled = true;
+  setGate("backup", "live");
   const box = document.createElement("div");
   box.className = "card";
   box.innerHTML = `<h3>Verifying</h3><div id="steps"></div>`;
@@ -1720,13 +1880,20 @@ function applyProposal() {
             ? `<pre class="err" style="margin-top:6px">${esc(s.detail)}</pre>`
             : s.detail ? ` <span class="muted">${esc(s.detail)}</span>` : "");
         $("steps").appendChild(row);
-        if (s.stage === "done")
+        if (s.stage === "backup") setGate("backup", s.ok ? "ok" : "fail");
+        if (s.stage === "backup" && s.ok) setGate("verify", "live");
+        if (s.stage === "error") setGate("verify", "fail");
+        if (s.stage === "done") {
+          setGate("verify", "ok");
           box.innerHTML += `<div class="banner ok" style="margin-top:12px">
             Kept. Stop the server (Ctrl+C) and start it again to load the
             new code.</div>`;
-        if (s.stage === "reverted")
+        }
+        if (s.stage === "reverted") {
+          setGate("verify", "fail");
           box.innerHTML += `<div class="banner bad" style="margin-top:12px">
             Reverted — your files are exactly as they were.</div>`;
+        }
       }
     }
     proposal = null;
@@ -1753,6 +1920,7 @@ $("restorebtn").onclick = async () => {
 };
 
 restorePrefs();
+loadIdlePeek();
 loadEnv().then(e => { if (e) initSelfEdit(); }).catch(() => {});
 """
 

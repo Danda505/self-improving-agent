@@ -136,6 +136,31 @@ def test_attempt_card_shows_telemetry():
     assert "tok" in web_ui.JS
 
 
+def test_idle_cover_is_instrument():
+    assert 'id="idle"' in web_ui.HTML
+    assert "idle-instrument" in web_ui.HTML
+    assert "last climb" in web_ui.HTML
+    assert "no climbs yet" in web_ui.HTML
+    assert "or pick a backend in the rail" in web_ui.HTML
+    assert "function loadIdlePeek" in web_ui.JS
+    assert "function renderIdlePeek" in web_ui.JS
+    assert "no climbs yet" in web_ui.JS
+    assert 'id="run-mock"' in web_ui.HTML
+    assert "$(\"idle\").classList.add(\"hide\")" in web_ui.JS
+    assert "idle-beats" not in web_ui.HTML
+    assert "idle-editorial" in web_ui.HTML
+    assert "idle-lede" in web_ui.HTML
+    assert "Write. Test. Feed the error back. Rewrite." in web_ui.HTML
+    assert "The suite is the scoreboard." in web_ui.HTML
+    assert "idle-editorial" not in web_ui.JS
+    assert "idle-lede" in web_ui.CSS
+    idle_html = web_ui.HTML
+    peek = idle_html.index('id="idle-peek"')
+    editorial = idle_html.index("idle-editorial")
+    cta = idle_html.index("idle-cta")
+    assert peek < editorial < cta
+
+
 def test_js_remembers_last_backend_model_task():
     assert 'PREFS_KEY = "sia-prefs"' in web_ui.JS
     assert "function restorePrefs" in web_ui.JS
