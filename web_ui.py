@@ -737,55 +737,84 @@ function handle(ev) {
   }
 }
 
+function shortModel(m) {
+  // Trim long fine-tune names to family+size:
+  // "qwen3.5-9b-uncensored-hauhaucs-aggressive" -> "qwen3.5-9b"
+  const parts = String(m).split("-");
+  return parts.length > 2 ? parts.slice(0, 2).join("-") : m;
+}
+
 async function loadHistory() {
   const runs = await (await fetch("/api/history")).json();
   $("histlist").innerHTML = runs.length
-    ? runs.map(r => `<div class="hist">
-        <span>${esc(r.model)} · ${esc(r.task)}</span>
-        <span>${r.solved_at ? "solved @ " + r.solved_at
-                            : "unsolved (" + r.points.length + ")"}</span>
-      </div>`).join("")
+    ? runs.map(r => {
+        const total = r.points[0] ? r.points[0].total : 0;
+        const best = Math.max(...r.points.map(p => p.passed));
+        return `<div class="hist">
+          <span>${esc(shortModel(r.model))} · ${esc(r.task)}</span>
+          <span>${r.solved_at
+            ? "solved on attempt " + r.solved_at
+            : "best " + best + "/" + total + " · " + r.points.length + " tries"}</span>
+        </div>`;
+      }).join("")
     : `<div class="muted">No runs yet.</div>`;
   drawChart(runs.slice(0, 8));
 }
 
 function drawChart(runs) {
-  const W = 800, H = 230, PL = 42, PB = 28, PT = 12, PR = 12;
+  const el = $("chart");
+  const W = el.clientWidth || 800, H = 260;
+  const PL = 40, PB = 26, PT = 12, PR = 168;
+  el.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  el.removeAttribute("preserveAspectRatio");
+
   const maxX = Math.max(2, ...runs.flatMap(r => r.points.map(p => p.attempt)));
   const x = a => PL + (a - 1) / (maxX - 1) * (W - PL - PR);
   const y = pct => PT + (1 - pct / 100) * (H - PT - PB);
-  const colors = ["#5eb0ff","#3fca7c","#e5b95c","#ef6461",
-                  "#b58cff","#4fd0d0","#ff9f6b","#8fa2c0"];
-  let s = "";
 
+  const MODEL_COLORS = ["#5eb0ff", "#3fca7c", "#e5b95c", "#b58cff", "#ef6461", "#4fd0d0"];
+  const DASHES = ["", "7 5", "2 4", "10 4 2 4"];
+  const models = [...new Set(runs.map(r => shortModel(r.model)))];
+  const tasks = [...new Set(runs.map(r => r.task))];
+  const colorOf = m => MODEL_COLORS[models.indexOf(shortModel(m)) % MODEL_COLORS.length];
+  const dashOf = t => DASHES[tasks.indexOf(t) % DASHES.length];
+
+  let s = "";
   for (const pct of [0, 25, 50, 75, 100]) {
-    s += `<line x1="${PL}" y1="${y(pct)}" x2="${W - PR}" y2="${y(pct)}"
-           stroke="#2a2f3a" stroke-width="1"/>
-          <text x="${PL - 7}" y="${y(pct) + 4}" fill="#8b93a5"
-           font-size="10" text-anchor="end">${pct}%</text>`;
+    s += `<line x1="${PL}" y1="${y(pct)}" x2="${W - PR}" y2="${y(pct)}" stroke="#2a2f3a" stroke-width="1"/>`
+       + `<text x="${PL - 7}" y="${y(pct) + 3.5}" fill="#8b93a5" font-size="10" text-anchor="end">${pct}%</text>`;
   }
   for (let a = 1; a <= maxX; a++) {
-    s += `<text x="${x(a)}" y="${H - 9}" fill="#8b93a5" font-size="10"
-           text-anchor="middle">${a}</text>`;
+    s += `<text x="${x(a)}" y="${H - 8}" fill="#8b93a5" font-size="10" text-anchor="middle">${a}</text>`;
   }
 
-  runs.forEach((r, i) => {
-    const c = colors[i % colors.length];
+  runs.forEach(r => {
+    const c = colorOf(r.model), dash = dashOf(r.task);
     const pts = r.points.map(p => `${x(p.attempt)},${y(100 * p.passed / p.total)}`);
-    s += `<polyline points="${pts.join(" ")}" fill="none" stroke="${c}"
-           stroke-width="2"/>`;
+    s += `<polyline points="${pts.join(" ")}" fill="none" stroke="${c}" stroke-width="2" stroke-dasharray="${dash}" stroke-linejoin="round"/>`;
     r.points.forEach(p => {
-      s += `<circle cx="${x(p.attempt)}" cy="${y(100 * p.passed / p.total)}"
-             r="3.5" fill="${c}"><title>${r.model} · attempt ${p.attempt} ·
-             ${p.passed}/${p.total}</title></circle>`;
+      const solved = p.passed === p.total;
+      s += `<circle cx="${x(p.attempt)}" cy="${y(100 * p.passed / p.total)}" r="${solved ? 5 : 3}" fill="${c}"${solved ? ' stroke="#fff" stroke-width="1.5"' : ''}><title>${esc(shortModel(r.model))} · ${esc(r.task)} · attempt ${p.attempt} · ${p.passed}/${p.total}</title></circle>`;
     });
+    const last = r.points[r.points.length - 1];
+    if (last) {
+      s += `<text x="${x(last.attempt) + 8}" y="${y(100 * last.passed / last.total) + 3}" fill="${c}" font-size="10">${last.passed}/${last.total}</text>`;
+    }
+  });
+
+  const lx = W - PR + 12;
+  let ly = PT + 6;
+  runs.forEach(r => {
+    const c = colorOf(r.model), dash = dashOf(r.task);
+    s += `<line x1="${lx}" y1="${ly}" x2="${lx + 20}" y2="${ly}" stroke="${c}" stroke-width="2" stroke-dasharray="${dash}"/>`
+       + `<text x="${lx + 26}" y="${ly + 3.5}" fill="#e6e8ee" font-size="10">${esc(shortModel(r.model))} · ${esc(r.task)}${r.solved_at ? " ✓" : ""}</text>`;
+    ly += 18;
   });
 
   if (!runs.length) {
-    s += `<text x="${W / 2}" y="${H / 2}" fill="#8b93a5" font-size="13"
-           text-anchor="middle">No runs logged yet</text>`;
+    s += `<text x="${(W - PR) / 2}" y="${H / 2}" fill="#8b93a5" font-size="13" text-anchor="middle">No runs logged yet</text>`;
   }
-  $("chart").innerHTML = s;
+  el.innerHTML = s;
 }
 
 // ---- self-edit ------------------------------------------------------------
