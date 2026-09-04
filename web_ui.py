@@ -46,10 +46,22 @@ def ollama_models():
         return []
 
 
+def lmstudio_models():
+    # LM Studio serves an OpenAI-compatible endpoint on :1234
+    try:
+        with urllib.request.urlopen("http://localhost:1234/v1/models", timeout=3) as r:
+            data = json.loads(r.read())
+        return [m["id"] for m in data.get("data", [])]
+    except Exception:
+        return []
+
+
 def probe_env():
     models = ollama_models()
+    lm = lmstudio_models()
     return {
         "ollama": {"up": bool(models) or _ollama_reachable(), "models": models},
+        "lmstudio": {"up": bool(lm), "models": lm},
         "docker": {"up": agent.docker_available(),
                    "image": agent.docker_image_present()},
         "anthropic": {"key": bool(os.environ.get("ANTHROPIC_API_KEY"))},
@@ -499,7 +511,7 @@ let es = null, runId = null, env = null;
 const BACKENDS = [
   ["mock",       "mock — no model, canned answers"],
   ["ollama",     "ollama — local, free"],
-  ["lmstudio",   "lmstudio — local OpenAI-compatible"],
+  ["lmstudio",   "lmstudio — local, LM Studio"],
   ["anthropic",  "anthropic — paid API"],
   ["groq",       "groq — free tier, hosted"],
   ["mock-stuck", "mock-stuck — always 12/15, to test plateau reseeding"],
@@ -543,34 +555,41 @@ async function loadEnv() {
     `<span class="pill ${on ? "on" : "off"}">${on ? "●" : "○"} ${txt}</span>`;
   $("envpills").innerHTML =
     pill(env.ollama.up, "ollama") +
+    pill(env.lmstudio.up, "lmstudio") +
     pill(env.docker.up, "docker") +
     pill(env.anthropic.key, "anthropic key") +
     pill(env.groq.key, "groq key");
 
-  if (env.ollama.models.length) {
-    $("modelsel").innerHTML = env.ollama.models
-      .map(m => `<option value="${m}">${m}</option>`).join("");
-  }
   syncBackend();
   return env;
 }
 
+function modelsFor(b) {
+  if (b === "ollama") return env.ollama.models;
+  if (b === "lmstudio") return env.lmstudio.models;
+  return [];
+}
+
 function syncBackend() {
   const b = $("backend").value;
-  const useList = (b === "ollama" && env.ollama.models.length);
+  const list = modelsFor(b);
+  const useList = list.length > 0;
+  if (useList) {
+    $("modelsel").innerHTML = list
+      .map(m => `<option value="${m}">${m}</option>`).join("");
+  }
   $("modelsel").classList.toggle("hide", !useList);
   $("model").classList.toggle("hide", useList);
   $("model").placeholder =
     b === "anthropic" ? "claude-sonnet-5"
     : b === "groq" ? "llama-3.3-70b-versatile"
     : b === "ollama" ? "qwen2.5-coder:7b"
-    : b === "lmstudio" ? "local-model" : "n/a";
+    : b === "lmstudio" ? "(load a model in LM Studio)" : "n/a";
 }
 
 function currentModel() {
   const b = $("backend").value;
-  return (b === "ollama" && env.ollama.models.length)
-    ? $("modelsel").value : $("model").value.trim();
+  return modelsFor(b).length ? $("modelsel").value : $("model").value.trim();
 }
 
 $("backend").onchange = syncBackend;
