@@ -402,3 +402,79 @@ def test_loop_records_tokens_when_backend_reports(tmp_path, monkeypatch):
     logged = json.loads((tmp_path / "attempts.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert logged["tokens"] == 800
     assert logged["elapsed_ms"] == att["elapsed_ms"]
+
+
+def test_compact_code_diff_first_identical_and_changed():
+    src = "def f():\n    return 1\n"
+    assert agent.compact_code_diff(None, src) is None
+    assert agent.compact_code_diff(src, src) == ""
+    d = agent.compact_code_diff(src, "def f():\n    return 2\n")
+    assert "-    return 1" in d
+    assert "+    return 2" in d
+    assert "@@" in d
+    assert "---" not in d and "+++" not in d
+
+
+def test_loop_attaches_code_diff_after_first_not_in_log(tmp_path, monkeypatch):
+    _silence_loop(tmp_path, monkeypatch)
+    events = list(agent.iter_loop(
+        agent.MockBackend(), agent.BUILTIN_TASKS["roman"],
+        attempts=3, backend_name="mock",
+    ))
+    attempts = [e for e in events if e["type"] == "attempt"]
+    assert "code_diff" not in attempts[0]
+    assert "code_diff" in attempts[1]
+    assert attempts[1]["code_diff"]
+    logged = [
+        json.loads(line)
+        for line in (tmp_path / "attempts.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert all("code_diff" not in row for row in logged)
+
+
+def test_loop_stops_at_token_cap(tmp_path, monkeypatch):
+    _silence_loop(tmp_path, monkeypatch)
+    events = list(agent.iter_loop(
+        _UsageBackend(ZERO_ROMAN), agent.BUILTIN_TASKS["roman"],
+        attempts=5, backend_name="usage", max_tokens=1500, stall_limit=10,
+    ))
+    kinds = [e["type"] for e in events]
+    assert kinds.count("attempt") == 2
+    assert "done" not in kinds
+    cap = next(e for e in events if e["type"] == "capped")
+    assert cap["reason"] == "tokens"
+    assert cap["tokens_used"] == 1600
+    assert cap["max_tokens"] == 1500
+    assert cap["attempts_used"] == 2
+
+
+def test_loop_token_cap_ignored_when_usage_unreported(tmp_path, monkeypatch):
+    _silence_loop(tmp_path, monkeypatch)
+    events = list(agent.iter_loop(
+        agent.MockBackend(), agent.BUILTIN_TASKS["roman"],
+        attempts=2, backend_name="mock", max_tokens=1,
+    ))
+    assert not any(e["type"] == "capped" for e in events)
+    assert len([e for e in events if e["type"] == "attempt"]) == 2
+
+
+def test_loop_stops_at_time_cap(tmp_path, monkeypatch):
+    _silence_loop(tmp_path, monkeypatch)
+    clock = {"t": 0.0}
+
+    class Tick(RecordingBackend):
+        def complete(self, *a, **k):
+            clock["t"] += 10.0
+            return super().complete(*a, **k)
+
+    monkeypatch.setattr(agent.time, "time", lambda: clock["t"])
+    events = list(agent.iter_loop(
+        Tick(ZERO_ROMAN), agent.BUILTIN_TASKS["roman"],
+        attempts=5, backend_name="tick", max_seconds=15, stall_limit=10,
+    ))
+    kinds = [e["type"] for e in events if e["type"] in ("attempt", "capped")]
+    assert kinds == ["attempt", "attempt", "capped"]
+    cap = next(e for e in events if e["type"] == "capped")
+    assert cap["reason"] == "time"
+    assert cap["attempts_used"] == 2

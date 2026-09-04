@@ -136,6 +136,32 @@ def test_attempt_card_shows_telemetry():
     assert "tok" in web_ui.JS
 
 
+def test_js_remembers_last_backend_model_task():
+    assert 'PREFS_KEY = "sia-prefs"' in web_ui.JS
+    assert "function restorePrefs" in web_ui.JS
+    assert "function savePrefs" in web_ui.JS
+    # Restore against static options, then loadEnv snapshots those values.
+    assert web_ui.JS.index("restorePrefs();") < web_ui.JS.index("loadEnv().then")
+    assert 'restoreSelect($("task"), p.task)' in web_ui.JS
+    assert 'restoreSelect($("task"), prevTask)' in web_ui.JS
+    assert 'restoreSelect($("backend"), prevBackend)' in web_ui.JS
+
+
+def test_attempt_card_renders_code_diff():
+    assert "function codeDiffHtml(diff)" in web_ui.JS
+    assert "codeDiffHtml(ev.code_diff)" in web_ui.JS
+    assert "no code change from previous attempt" in web_ui.JS
+
+
+def test_loop_section_has_token_and_time_caps():
+    assert 'id="max_tokens"' in web_ui.HTML
+    assert 'id="max_seconds"' in web_ui.HTML
+    assert "max_tokens" in web_ui.JS
+    assert 'ev.type === "capped"' in web_ui.JS
+    assert "Token budget reached" in web_ui.JS
+    assert "max_tokens, max_seconds" in web_ui.JS or 'max_tokens: $("max_tokens")' in web_ui.JS
+
+
 def test_api_history_forwards_telemetry_when_present(tmp_path, monkeypatch):
     log = tmp_path / "attempts.jsonl"
     monkeypatch.setattr(agent, "LOG_PATH", log)

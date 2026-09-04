@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -694,6 +695,31 @@ def extract_code(text):
     return text.strip()
 
 
+def compact_code_diff(prev, curr, context=2):
+    """Unified diff of two attempt bodies.
+
+    None when there is no previous attempt. Empty string when the code did
+    not change. File headers are omitted so the UI can show a short hunk.
+    """
+    if prev is None:
+        return None
+    if prev == curr:
+        return ""
+    a = prev.splitlines(keepends=True)
+    b = curr.splitlines(keepends=True)
+    if a and not a[-1].endswith("\n"):
+        a[-1] += "\n"
+    if b and not b[-1].endswith("\n"):
+        b[-1] += "\n"
+    lines = []
+    for line in difflib.unified_diff(a, b, fromfile="prev", tofile="this",
+                                     n=context):
+        if line.startswith("---") or line.startswith("+++"):
+            continue
+        lines.append(line if line.endswith("\n") else line + "\n")
+    return "".join(lines)
+
+
 # ----------------------------------------------------------------------------
 # The scoreboard. Candidate code and cases go in over stdin, a JSON verdict
 # comes back on stdout -- same protocol whether we run locally or in Docker.
@@ -995,9 +1021,13 @@ FRESH_RESEED = (
 )
 
 
+DEFAULT_MAX_TOKENS = 100_000  # 0 = no token cap (backends that never report)
+
+
 def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
-              backend_name="?", stall_limit=3, escalate=True, temp_step=0.0):
-    """Yields dicts: start, attempt, escalate, done, error, stopped.
+              backend_name="?", stall_limit=3, escalate=True, temp_step=0.0,
+              max_tokens=DEFAULT_MAX_TOKENS, max_seconds=0):
+    """Yields dicts: start, attempt, escalate, done, error, stopped, capped.
 
     Ratchet: the best-scoring attempt is always kept, saved to disk, and used as
     the seed for the next prompt -- so a regression can never cost ground. On a
@@ -1008,24 +1038,45 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
     temperature fixed, so the effect of reseeding can be measured without also
     changing sampling. (An earlier version changed both at once and could not
     tell which mattered; on a 7B the temperature rise made things worse.)
+
+    max_tokens: stop before the next API call once reported usage reaches this
+    total. 0 disables it. Backends that never report usage are not estimated —
+    the attempt cap is then the only budget.
+    max_seconds: wall-clock cap for the whole run. 0 disables it.
     """
     runner = runner or run_tests_subprocess
     run_id = uuid.uuid4().hex[:8]
     model_name = getattr(backend, "model", backend_name)
     total = len(task["cases"])
     base_temp = 0.2
+    try:
+        max_tokens = int(max_tokens or 0)
+    except (TypeError, ValueError):
+        max_tokens = 0
+    try:
+        max_seconds = float(max_seconds or 0)
+    except (TypeError, ValueError):
+        max_seconds = 0
+    if max_tokens < 0:
+        max_tokens = 0
+    if max_seconds < 0:
+        max_seconds = 0
 
     yield {"type": "start", "run_id": run_id, "backend": backend_name,
            "model": model_name, "task": task["name"],
            "func_name": task["func_name"], "total": total,
            "max_attempts": attempts,
-           "stall_limit": stall_limit if escalate else 0}
+           "stall_limit": stall_limit if escalate else 0,
+           "max_tokens": max_tokens, "max_seconds": max_seconds}
 
     messages = [{"role": "user", "content": task["spec"]}]
     best_passed, best_code, best_error, best_attempt = -1, None, "", 0
     stall = 0
     level = 0
     temperature = base_temp
+    prev_code = None
+    tokens_used = 0
+    t_start = time.time()
 
     def save_best():
         if best_code is None:
@@ -1034,9 +1085,27 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
         p.write_text(best_code + "\n", encoding="utf-8")
         return p.name
 
+    def cap_event(reason, attempt):
+        ev = {
+            "type": "capped", "run_id": run_id, "reason": reason,
+            "attempts_used": attempt,
+            "best": max(best_passed, 0), "total": total,
+            "best_attempt": best_attempt,
+            "tokens_used": tokens_used,
+            "max_tokens": max_tokens,
+            "elapsed_s": round(time.time() - t_start, 1),
+            "max_seconds": max_seconds,
+        }
+        if best_code is not None:
+            ev["best_solution"] = f"best_{task['name']}_{run_id}.py"
+        return ev
+
     for attempt in range(1, attempts + 1):
         if should_stop and should_stop():
             yield {"type": "stopped", "run_id": run_id, "attempt": attempt}
+            return
+        if max_seconds and (time.time() - t_start) >= max_seconds:
+            yield cap_event("time", attempt - 1 if attempt > 1 else 0)
             return
 
         t0 = time.time()
@@ -1049,6 +1118,8 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
         elapsed = time.time() - t0
         elapsed_ms = max(0, int(round(elapsed * 1000)))
         tokens = take_last_tokens(backend)
+        if tokens is not None:
+            tokens_used += tokens
 
         code = extract_code(reply)
         try:
@@ -1082,7 +1153,12 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
         if tokens is not None:
             record["tokens"] = tokens
         log_attempt(record)
-        yield {"type": "attempt", **record}
+        ev = {"type": "attempt", **record}
+        diff = compact_code_diff(prev_code, code)
+        if diff is not None:
+            ev["code_diff"] = diff
+        prev_code = code
+        yield ev
 
         if passed == total:
             path = HERE / f"solution_{task['name']}_{run_id}.py"
@@ -1090,6 +1166,13 @@ def iter_loop(backend, task, attempts=10, runner=None, should_stop=None,
             yield {"type": "done", "run_id": run_id, "success": True,
                    "attempts_used": attempt, "solution": path.name,
                    "code": code}
+            return
+
+        if max_tokens and tokens_used >= max_tokens:
+            yield cap_event("tokens", attempt)
+            return
+        if max_seconds and (time.time() - t_start) >= max_seconds:
+            yield cap_event("time", attempt)
             return
 
         # Plateau -> reseed from a clean context, still anchored on the best.
@@ -1140,13 +1223,20 @@ def run_loop_cli(backend, task, args, runner):
                         backend_name=args.backend,
                         stall_limit=args.stall_limit,
                         escalate=not args.no_escalate,
-                        temp_step=args.temp_step):
+                        temp_step=args.temp_step,
+                        max_tokens=args.max_tokens,
+                        max_seconds=args.max_seconds):
         if ev["type"] == "start":
             print(f"task     : {ev['task']}  ({ev['func_name']})")
             print(f"backend  : {ev['backend']}  model: {ev['model']}")
             print(f"runner   : {args.runner}")
             print(f"run id   : {ev['run_id']}")
-            print(f"attempts : up to {ev['max_attempts']}\n")
+            print(f"attempts : up to {ev['max_attempts']}")
+            if ev.get("max_tokens"):
+                print(f"token cap: {ev['max_tokens']}")
+            if ev.get("max_seconds"):
+                print(f"time cap : {ev['max_seconds']}s")
+            print()
         elif ev["type"] == "attempt":
             bar = "#" * ev["passed"] + "." * (ev["total"] - ev["passed"])
             print(f"attempt {ev['attempt']:>2}: [{bar}] "
@@ -1167,6 +1257,19 @@ def run_loop_cli(backend, task, args, runner):
                 print(f"\ngave up after {ev['attempts_used']} attempts "
                       f"(best: {ev['best']}/{ev['total']} on attempt "
                       f"{ev['best_attempt']})")
+                print(f"best kept -> {ev['best_solution']}")
+        elif ev["type"] == "capped":
+            why = ("token budget"
+                   if ev["reason"] == "tokens" else "time limit")
+            detail = (f"{ev['tokens_used']}/{ev['max_tokens']} tokens"
+                      if ev["reason"] == "tokens"
+                      else f"{ev['elapsed_s']}s")
+            print(f"\nstopped: {why} reached ({detail}) after "
+                  f"{ev['attempts_used']} attempts "
+                  f"(best: {ev['best']}/{ev['total']}"
+                  + (f" on attempt {ev['best_attempt']}" if ev.get("best_attempt")
+                     else "") + ")")
+            if ev.get("best_solution"):
                 print(f"best kept -> {ev['best_solution']}")
         elif ev["type"] == "error":
             print(f"\nerror: {ev['message']}")
@@ -1243,6 +1346,13 @@ def main():
     p.add_argument("--task", default="roman", choices=list(BUILTIN_TASKS))
     p.add_argument("--task-file", default=None, help="path to a custom task JSON")
     p.add_argument("--attempts", type=int, default=10)
+    p.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
+                   help="stop the run after this many reported tokens "
+                        f"(default {DEFAULT_MAX_TOKENS}; 0 = no token cap). "
+                        "Backends that do not report usage ignore this.")
+    p.add_argument("--max-seconds", type=float, default=0,
+                   help="stop the run after this many wall-clock seconds "
+                        "(0 = no time cap)")
     p.add_argument("--plot", action="store_true", help="show the improvement curve")
     p.add_argument("--task-filter", default=None, help="with --plot, one task only")
     args = p.parse_args()

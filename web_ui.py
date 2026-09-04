@@ -321,6 +321,8 @@ class Handler(BaseHTTPRequestHandler):
         escalate = one("escalate", "1") == "1"
         stall_limit = int(one("stall_limit", "3"))
         temp_step = float(one("temp_step", "0") or "0")
+        max_tokens = int(one("max_tokens", str(agent.DEFAULT_MAX_TOKENS)) or "0")
+        max_seconds = float(one("max_seconds", "0") or "0")
         task_name = one("task", "roman")
         task_json = one("task_json")
 
@@ -362,7 +364,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for ev in agent.iter_loop(backend, task, attempts, runner,
                                       should_stop, backend_name,
-                                      stall_limit, escalate, temp_step):
+                                      stall_limit, escalate, temp_step,
+                                      max_tokens, max_seconds):
                 if ev["type"] == "start":
                     state["run_id"] = ev["run_id"]
                 ev["runner"] = runner_name
@@ -642,6 +645,10 @@ CSS = r"""
     margin-bottom:8px; user-select:none; letter-spacing:.02em;
   }
   .code-fold { margin-top:12px }
+  pre.diff { margin-top:8px }
+  pre.diff .add { color:var(--ok) }
+  pre.diff .del { color:var(--bad) }
+  pre.diff .hunk { color:var(--muted) }
   .timeline { position:relative; padding-left:28px }
   .timeline::before {
     content:""; position:absolute; left:7px; top:10px; bottom:10px;
@@ -851,6 +858,10 @@ HTML = r"""
       <input type="range" id="stall_limit" min="1" max="10" value="3">
       <label>Temp step <span class="muted">0 = no heat-up</span></label>
       <input id="temp_step" type="number" min="0" max="1" step="0.05" value="0">
+      <label>Max tokens / run <span class="muted">0 = no cap</span></label>
+      <input id="max_tokens" type="number" min="0" step="1000" value="100000">
+      <label>Max seconds <span class="muted">0 = no cap</span></label>
+      <input id="max_seconds" type="number" min="0" step="10" value="0">
     </section>
 
     <section class="isec">
@@ -996,6 +1007,7 @@ tickClock();
 setInterval(tickClock, 1000);
 
 const THEME_KEY = "sia-theme";
+const PREFS_KEY = "sia-prefs";
 let lastChartRuns = [];
 
 function currentTheme() {
@@ -1024,6 +1036,43 @@ syncThemeToggle();
 
 function restoreSelect(el, prev) {
   if (prev && [...el.options].some(o => o.value === prev)) el.value = prev;
+}
+
+function readPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREFS_KEY) || "null") || {}; }
+  catch (e) { return {}; }
+}
+
+function savePrefs() {
+  try {
+    const task = $("task").value;
+    const payload = {
+      backend: $("backend").value,
+      model: currentModel(),
+      task: task,
+      runner: $("runner").value,
+    };
+    if (task === "__custom") payload.task_json = $("taskjson").value;
+    localStorage.setItem(PREFS_KEY, JSON.stringify(payload));
+  } catch (e) {}
+}
+
+function restorePrefs() {
+  // Static <option>s already exist. loadEnv() snapshots the current values
+  // and restoreSelect()s them after it rebuilds, so this must run first.
+  const p = readPrefs();
+  restoreSelect($("backend"), p.backend);
+  restoreSelect($("runner"), p.runner);
+  restoreSelect($("task"), p.task);
+  if ($("task").value === "__custom") {
+    $("customwrap").classList.remove("hide");
+    if (p.task_json) $("taskjson").value = p.task_json;
+  }
+  if (p.model) $("model").value = p.model;
+  syncBackend();
+  if (p.model && !$("modelsel").classList.contains("hide"))
+    restoreSelect($("modelsel"), p.model);
+  updateMini();
 }
 
 async function loadEnv() {
@@ -1129,7 +1178,7 @@ function updateMini() {
   $("mini-task").textContent = t === "__custom" ? "custom" : (t || "—");
 }
 
-$("backend").onchange = syncBackend;
+$("backend").onchange = () => { syncBackend(); savePrefs(); };
 $("attempts").oninput = e => $("attlbl").textContent = e.target.value;
 $("stall_limit").oninput = e => $("stalllbl").textContent = e.target.value;
 $("task").onchange = e => {
@@ -1143,14 +1192,16 @@ $("task").onchange = e => {
     }, null, 2);
   }
   updateMini();
+  savePrefs();
 };
-$("model").oninput = updateMini;
-$("modelsel").onchange = updateMini;
+$("model").oninput = () => { updateMini(); savePrefs(); };
+$("modelsel").onchange = () => { updateMini(); savePrefs(); };
 $("runner").onchange = e => {
   const d = e.target.value === "docker";
   $("sandboxwarn").textContent = d
     ? "Code runs in python:3.11-slim with no network, 256MB, read-only disk, as nobody. First run pulls the image."
     : "subprocess isolates crashes and infinite loops, but model-written code can still touch your files. Switch to docker for anything open-ended.";
+  savePrefs();
 };
 
 $("inspector-collapse").onclick = () => $("wrap").classList.add("collapsed");
@@ -1189,6 +1240,22 @@ function telemetryLine(ev) {
   }
   if (ev.tokens != null && ev.tokens !== "") parts.push(ev.tokens + " tok");
   return parts.join(" · ");
+}
+
+function codeDiffHtml(diff) {
+  if (diff == null) return "";
+  if (!String(diff).trim())
+    return `<div class="muted">no code change from previous attempt</div>`;
+  const body = String(diff).split("\n").map(line => {
+    const e = esc(line);
+    if (line.startsWith("@@")) return `<span class="hunk">${e}</span>`;
+    if (line.startsWith("+") && !line.startsWith("+++"))
+      return `<span class="add">${e}</span>`;
+    if (line.startsWith("-") && !line.startsWith("---"))
+      return `<span class="del">${e}</span>`;
+    return e;
+  }).join("\n");
+  return `<pre class="diff">${body}</pre>`;
 }
 
 function bar(passed, total, cases) {
@@ -1251,6 +1318,7 @@ function startRun(forceBackend) {
   };
   renderRunhead();
 
+  savePrefs();
   const p = new URLSearchParams({
     backend: $("backend").value,
     model: currentModel(),
@@ -1260,6 +1328,8 @@ function startRun(forceBackend) {
     escalate: $("escalate").value,
     stall_limit: $("stall_limit").value,
     temp_step: $("temp_step").value,
+    max_tokens: $("max_tokens").value || "0",
+    max_seconds: $("max_seconds").value || "0",
   });
   if ($("task").value === "__custom") p.set("task_json", $("taskjson").value);
 
@@ -1322,7 +1392,7 @@ function handle(ev) {
     card.className = "card " + (ok ? "pass" : "fail");
     const codeFold =
       `<details class="code-fold"><summary>Show code</summary>
-       <pre>${esc(ev.code)}</pre></details>`;
+       <pre>${esc(ev.code)}</pre>${codeDiffHtml(ev.code_diff)}</details>`;
     card.innerHTML =
       `<h3>Attempt ${ev.attempt}
          <span class="muted">${ev.passed}/${ev.total} passed ·
@@ -1364,6 +1434,22 @@ function handle(ev) {
       runState.best = ev.best;
       runState.total = ev.total;
     }
+    finish();
+  }
+  else if (ev.type === "capped") {
+    if (ev.best != null) {
+      runState.best = ev.best;
+      runState.total = ev.total || runState.total;
+    }
+    const why = ev.reason === "tokens"
+      ? `Token budget reached (${ev.tokens_used}/${ev.max_tokens})`
+      : ev.reason === "time"
+        ? `Time limit reached (${ev.elapsed_s}s)`
+        : "Run cap reached";
+    $("banner").innerHTML =
+      `<div class="banner bad">${esc(why)} after ${ev.attempts_used} attempts`
+      + (ev.total != null ? ` (best ${ev.best}/${ev.total})` : "")
+      + `</div>`;
     finish();
   }
   else if (ev.type === "stopped") {
@@ -1666,6 +1752,7 @@ $("restorebtn").onclick = async () => {
        server to load them.</div>`;
 };
 
+restorePrefs();
 loadEnv().then(e => { if (e) initSelfEdit(); }).catch(() => {});
 """
 
