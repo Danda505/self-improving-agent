@@ -4,7 +4,7 @@ A loop with a scoreboard. The model writes a function, the function runs against
 a fixed test suite, failures are fed back verbatim, the model rewrites. The test
 suite is the whole reason "improvement" means anything here.
 
-Two ways in: a browser UI, or the command line. Same loop underneath.
+Two ways in: the Night desk browser UI, or the command line. Same loop underneath.
 
 ![Idle Night desk console](docs/screenshot.png)
 
@@ -14,44 +14,59 @@ From the project folder:
 
 ```powershell
 cd path\to\self-improving-agent
-py -3 web_ui.py
+python web_ui.py
 ```
 
-On Windows, use `py -3`. Plain `python` is often the Microsoft Store stub.
+On Windows, use `py -3` if plain `python` is the Microsoft Store stub.
 
-Your browser opens at `http://localhost:8000`. Leave backend on **mock** and
-press **Run** — you'll watch it go 2/11 → 9/11 → 11/11. `mock` isn't a model,
-it's three canned answers, there so you can confirm everything works before
-blaming Ollama for anything.
+The UI binds to `127.0.0.1` only (nothing on your network can reach it) and
+opens `http://127.0.0.1:8000`. Leave backend on **mock** and press **Run** —
+on the default `roman` task you'll watch it go 2/11 → 9/11 → 11/11. `mock`
+isn't a model; it has a canned buggy-then-correct sequence for every built-in
+task, so you can confirm the loop works before blaming Ollama for anything.
+Custom JSON tasks get a dummy that returns `None`.
 
-Then switch the backend to **ollama** (or **lmstudio**) and run it again for real.
+Then switch the backend to **ollama** or **lmstudio** and run it again for real.
 
-The UI has no dependencies — pure standard library, binds to 127.0.0.1 only, so
-nothing on your network can reach it. Override the port with `SIA_PORT`; set
-`SIA_NO_BROWSER=1` to skip opening a tab.
+No extra packages for the UI — standard library only. Override the port with
+`SIA_PORT`; set `SIA_NO_BROWSER=1` to skip opening a tab.
 
 ### What's in it
 
 - **Backend** — mock, mock-stuck, ollama, lmstudio, anthropic, groq. Dots next
-  to ollama / docker / API keys show what's reachable right now.
-- **Model** — auto-populated from `ollama list` when Ollama is running.
+  to ollama / lmstudio / docker / API keys show what's reachable right now.
+- **Model** — auto-populated from Ollama or LM Studio when that server is up.
 - **Task** — `roman`, `parens`, `csv`, `expr`, `roman_parse`, or `custom…` for
   your own (JSON editor, prefilled with a working example).
+- **Last-run prefs** — backend, model, task, and runner are remembered in the
+  browser.
 - **Where code runs** — subprocess or Docker. See sandboxing below.
 - **Max attempts** — raise it for small models; they need more swings.
 - **If it plateaus** — reseed from the best attempt so far (the ratchet), or
   keep feeding the same error. Stall limit and temp step are optional; temp
   step defaults to 0 (no heat-up).
-- **Live run** — one card per attempt with a pass/fail bar, the exact test
-  failures, and the code. Streams in as it happens.
-- **Improvement curve** — every run you've ever done, overlaid.
-- **Self-edit** — propose a rewrite of the app's own source, approve the diff,
-  then verify-or-revert. See below.
+- **Token / time cap** — stop before the next call once reported tokens or
+  wall-clock seconds hit the limit. Token cap defaults to 100000 (0 = none);
+  backends that never report usage ignore it. Time cap defaults to 0.
+- **Live run** — one card per attempt with a per-case pass/fail bar, the exact
+  test failures, the code, a diff vs the previous attempt, and time / tokens
+  when the backend reports them.
+- **Idle** — last climb from the previous run (score, trace). Light / dark
+  toggle, remembered.
+- **Improvement curve** — every run you've ever done, overlaid, plus a
+  per-case heatmap when the log has case outcomes (older lines without cases
+  show as "no case log").
+- **Self-edit** — propose → backup → verify-or-revert. See below.
 
 ## The ratchet
 
 Every retry is anchored on the **best** attempt so far, never on a regression.
 The best code is written to `best_<task>_<runid>.py` as soon as it improves.
+
+If nothing has ever passed (best is still 0), there is nothing worth keeping.
+The loop does **not** refine that broken code — it starts a fresh conversation
+with only the error. That's zero-escape. The ratchet only kicks in once a
+case has actually passed.
 
 If the score does not improve for `--stall-limit` attempts (default 3), the
 loop **reseeds**: a fresh conversation still showing that best code and the
@@ -64,10 +79,11 @@ temperature at the same time and could not tell which change mattered.)
 ## Command line
 
 ```powershell
-py -3 self_improving_agent.py --backend ollama --model qwen2.5-coder:7b
-py -3 self_improving_agent.py --backend ollama --runner docker
-py -3 self_improving_agent.py --backend mock --task roman
-py -3 self_improving_agent.py --plot
+python self_improving_agent.py --backend ollama --model qwen2.5-coder:7b
+python self_improving_agent.py --backend ollama --runner docker
+python self_improving_agent.py --backend mock --task roman
+python self_improving_agent.py --backend lmstudio
+python self_improving_agent.py --plot
 ```
 
 ```
@@ -80,6 +96,8 @@ py -3 self_improving_agent.py --plot
 --stall-limit N   attempts without improvement before reseeding (default 3)
 --no-escalate     disable reseeding on plateau
 --temp-step F     temperature added per reseed level (default 0: fixed)
+--max-tokens N    stop after this many reported tokens (default 100000; 0 = none)
+--max-seconds N   wall-clock cap for the whole run (default 0: none)
 --plot            print the curve, write improvement_curve.png
 --task-filter     with --plot, one task only
 ```
@@ -90,20 +108,21 @@ watch plateau reseeding without a real model.
 ## Self-edit
 
 `self_edit.py` lets a strong model rewrite one of the app's own source files.
-Nothing is written until you approve the diff. Every write is backed up first.
-After writing, a verification gate runs (compile, import, a mock roman loop,
-and a spare-port UI boot). Any failure reverts the file automatically.
-`self_edit.py` itself is not editable by the agent.
+Three beats: **propose** (diff only, nothing written), **backup** (snapshot
+before the write), **verify or revert**. You approve the diff between propose
+and backup. After writing, a verification gate runs (compile, import, a mock
+roman loop, and a spare-port UI boot). Any failure reverts the file
+automatically. `self_edit.py` itself is not editable by the agent.
 
 ```powershell
-py -3 self_edit.py --verify-only          # run the gate on the current files
-py -3 self_edit.py --list-backups
-py -3 self_edit.py --restore NAME
-py -3 self_edit.py "add a clear-history button" --backend anthropic
+python self_edit.py --verify-only          # run the gate on the current files
+python self_edit.py --list-backups
+python self_edit.py --restore NAME
+python self_edit.py "add a clear-history button" --backend anthropic
 ```
 
-The same flow is in the UI's **Self-edit** tab (propose → approve → verify).
-Do not use `mock` for this — it cannot write a real file.
+The same flow is in the UI's **Self-edit** tab. Do not use `mock` for this —
+it cannot write a real file.
 
 ## Sandboxing
 
@@ -128,10 +147,10 @@ Use Docker the moment you point this at problems you haven't read the code for.
 
 ## Setup
 
-Optional packages (backends + the CLI chart). Core app is stdlib:
+Optional packages (backends, the CLI chart, tests). Core app is stdlib:
 
 ```powershell
-py -3 -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ollama pull qwen2.5-coder:7b
 ```
 
@@ -155,11 +174,12 @@ Set keys before launching `web_ui.py` — the UI reads them from its own process
 
 ## Tests
 
-Stdlib-only checks plus a mock roman loop. No paid APIs.
+`pytest`, no paid APIs. GitHub Actions runs them on push and pull request to
+`main`.
 
 ```powershell
-py -3 -m pip install -r requirements.txt
-py -3 -m pytest
+python -m pip install -r requirements.txt
+python -m pytest
 ```
 
 ## The comparison worth running
@@ -189,7 +209,8 @@ scoreboard is only as honest as you make it.
 ## Files it writes
 
 - `attempts.jsonl` — one line per attempt: run id, model, tests passed, error,
-  full code. Append-only, so runs accumulate and stay comparable.
+  full code, per-case outcomes, elapsed time, tokens when reported. Append-only,
+  so runs accumulate and stay comparable.
 - `solution_<task>_<runid>.py` — the winning function.
 - `best_<task>_<runid>.py` — the best attempt so far, even if the run never
   fully solves the task.
@@ -203,3 +224,7 @@ around code, stray or unlabeled fences, multiple code blocks, syntax errors, a
 function defined under the wrong name, exceptions at call time, infinite loops,
 and out-of-memory in the container all produce a clean message that gets fed
 back to the model rather than crashing the run.
+
+## License
+
+MIT. See `LICENSE`.
